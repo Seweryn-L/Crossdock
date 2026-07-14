@@ -1,0 +1,29 @@
+# Środowisko i zależności
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.python-version.local
+
+# Sekrety — nigdy do repo
+.env
+
+# Dane runtime (baza, logi, backupy)
+data/
+*.log
+
+# Narzędzia
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# System / IDE
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# Pliki tymczasowe Excela
+~$*.xlsx
