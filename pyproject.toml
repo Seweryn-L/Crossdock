@@ -1,0 +1,80 @@
+[project]
+name = "crossdock"
+version = "0.1.0"
+description = "System optymalizacji cross-dockingu w logistyce transportowej"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.5",
+    "apscheduler>=3.11.3",
+    "argon2-cffi>=25.1.0",
+    "geopy>=2.5.0",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "nicegui>=3.14.0",
+    "numpy>=2.5.1",
+    "openpyxl>=3.1.5",
+    "ortools>=9.15.6755",
+    "pandas>=3.0.3",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "sqlalchemy>=2.0.51",
+]
+
+[project.scripts]
+crossdock = "crossdock.__main__:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.156.6",
+    "import-linter>=2.13",
+    "mypy>=2.3.0",
+    "pre-commit>=4.6.0",
+    "py-spy>=0.4.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.21",
+    "snakeviz>=2.2.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crossdock"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["crossdock/domain", "crossdock/services"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["crossdock.storage.*"]
+# Storage is imported by services; check it loosely, not strictly.
+strict = false
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["crossdock"]

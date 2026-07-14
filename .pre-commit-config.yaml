@@ -1,0 +1,30 @@
+# Local hooks run inside the project venv — no cloud, per project policy.
+# Each hook uses the full path to uv.exe to avoid PATH issues during git commit.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff (lint)
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run ruff format --force-exclude
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy (domain + services)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+      - id: import-linter
+        name: import-linter (architektura warstw)
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+      - id: pytest
+        name: pytest (szybkie testy)
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false

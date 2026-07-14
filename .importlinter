@@ -1,0 +1,39 @@
+[importlinter]
+root_package = crossdock
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layered architecture: ui -> services -> domain
+type = layers
+layers =
+    crossdock.ui
+    crossdock.services
+    crossdock.domain
+containers =
+
+[importlinter:contract:optimization-purity]
+name = optimization stays free of I/O modules
+type = forbidden
+source_modules =
+    crossdock.optimization
+forbidden_modules =
+    crossdock.ui
+    crossdock.storage
+    crossdock.ingest
+    httpx
+    pandas
+    nicegui
+    sqlalchemy
+
+[importlinter:contract:domain-purity]
+name = domain imports no other crossdock layers
+type = forbidden
+source_modules =
+    crossdock.domain
+forbidden_modules =
+    crossdock.ui
+    crossdock.services
+    crossdock.storage
+    crossdock.ingest
+    crossdock.optimization
+    crossdock.distance
