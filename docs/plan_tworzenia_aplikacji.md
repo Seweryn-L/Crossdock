@@ -69,11 +69,16 @@
 
 ## Zależności od zespołu (wejścia do planu)
 
-| Wejście | Od kogo | Potrzebne najpóźniej | Blokuje |
-| :--- | :--- | :--- | :--- |
-| Tabela floty (typy, wymiary, palety, ładowność) | Martyna | T2 | Ekran floty (T2), model solvera (T3) |
-| Plik Excel marzec–kwiecień + instrukcja/lista braków raportu | Patryk | T2 | Parser importu (T2) |
-| Słownik kolumn raportu od firmy | Sandra | T2 | Mapowanie kolumn importu (T2) |
-| Wstępne stawki kosztowe (km per typ pojazdu, doba magazynowania palety) | Sandra | T6 | Funkcja kosztu raportów (T6), reguła buforowania (T7) |
-| Scenariusz wzorcowy "dobry plan" do porównania | Patryk | T8 | Walidacja golden (T8) |
-| Odpowiedź firmy: skąd liczba palet w danych | firma / zespół | T3 | Pojemności w solverze (palety vs kg) |
+> **Status 20.07.2026:** T2 startuje bez finalnych danych od zespołu (placeholdery + fixture syntetyczny).
+> Śledzenie braków, ownerów i checklisty po dostarczeniu: [`otwarte_wejscia_zespolu.md`](otwarte_wejscia_zespolu.md).
+> Szczegółowy plan implementacji T2: [`plan_t2_implementacja.md`](plan_t2_implementacja.md).
+> Szczegółowy plan implementacji T3: [`plan_t3_implementacja.md`](plan_t3_implementacja.md).
+
+| Wejście | Od kogo | Potrzebne najpóźniej | Blokuje | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| Tabela floty (typy, wymiary, palety, ładowność) | Martyna | T2 | Ekran floty (T2), model solvera (T3) | **brak — seed placeholder** |
+| Plik Excel marzec–kwiecień + instrukcja/lista braków raportu | Patryk | T2 | Parser importu (T2) | **sample e2open w fixtures podpięty; pełny okres + braki — od Patryka** |
+| Słownik kolumn raportu od firmy | Sandra | T2 | Mapowanie kolumn importu (T2) | **mapowanie empiryczne z pliku; potwierdzenie Sandry nadal mile widziane** |
+| Wstępne stawki kosztowe (km per typ pojazdu, doba magazynowania palety) | Sandra | T6 | Funkcja kosztu raportów (T6), reguła buforowania (T7) | czeka (T6) |
+| Scenariusz wzorcowy "dobry plan" do porównania | Patryk | T8 | Walidacja golden (T8) | czeka (T8) |
+| Odpowiedź firmy: skąd liczba palet w danych | firma / zespół | T3 | Pojemności w solverze (palety vs kg) | **brak — `pallet_count` opcjonalne** |

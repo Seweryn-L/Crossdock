@@ -1,0 +1,28 @@
+{
+  "_comment": "Mapowanie pod przykładowe_dane_od_firmy.xlsx (raport e2open). Nagłówek w wierszu 3. Brak kolumny palet (W-04). Słownik Sandry (W-02) może doprecyzować nazwy — do weryfikacji.",
+  "header_row": 3,
+  "sheet_name": null,
+  "weight_unit": "kg",
+  "date_formats": ["%m/%d/%Y", "%m/%d/%Y %H:%M", "%Y-%m-%d", "%d.%m.%Y"],
+  "columns": {
+    "delivery_code": "Order Ref",
+    "shipment_number": "TMS ID",
+    "pickup_name": "Origin Name",
+    "pickup_city": "Origin City",
+    "pickup_country": "Origin Country",
+    "pickup_postal_code": "Origin Postal Code",
+    "delivery_name": "Destination Name",
+    "delivery_city": "Destination City",
+    "delivery_country": "Destination Country",
+    "delivery_postal_code": "Destination Postal Code",
+    "weight_kg": "Product Weight",
+    "delivery_date": "Drop Plan Date Start",
+    "equipment_type": "Equipment"
+  },
+  "equipment_aliases": {
+    "Flatbed": "curtain",
+    "EU: 09 CURTAIN / BOX TRAILER": "curtain",
+    "Bus": "bus",
+    "Truck": "truck"
+  }
+}

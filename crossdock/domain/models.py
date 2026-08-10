@@ -43,6 +43,14 @@ class OrderStatus(StrEnum):
     DELIVERED = "delivered"
 
 
+class VehicleType(StrEnum):
+    """Fleet vehicle categories used by the company (bus / truck / curtain)."""
+
+    BUS = "bus"
+    TRUCK = "truck"
+    CURTAIN = "curtain"
+
+
 class User(BaseModel):
     """Application user account; role model present from day one."""
 
@@ -61,6 +69,32 @@ class Location(BaseModel):
     postal_code: str | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    def location_key(self) -> str:
+        """Stable lookup key for the coordinate dictionary."""
+        parts = [
+            (self.name or "").strip().lower(),
+            (self.city or "").strip().lower(),
+            (self.postal_code or "").strip().lower(),
+            (self.country or "").strip().lower(),
+        ]
+        return "|".join(parts)
+
+
+class Vehicle(BaseModel):
+    """Fleet vehicle with load capacities.
+
+    Seed capacities are PLACEHOLDER_PENDING_MARTYNA until the real fleet
+    table arrives (docs/otwarte_wejscia_zespolu.md W-03).
+    """
+
+    id: int | None = None
+    code: str = Field(min_length=1)
+    vehicle_type: VehicleType
+    pallet_capacity: int = Field(gt=0)
+    weight_capacity_kg: float = Field(gt=0)
+    is_active: bool = True
+    is_placeholder: bool = True
 
 
 class Shipment(BaseModel):

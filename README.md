@@ -10,6 +10,11 @@ planowanie transportów FTL (OR-Tools), wizualizacja tras na mapie, raporty efek
 | :--- | :--- |
 | [docs/stack_technologiczny.md](docs/stack_technologiczny.md) | Uzgodniony stack: technologie, licencje, decyzje architektoniczne, odrzucone opcje |
 | [docs/plan_tworzenia_aplikacji.md](docs/plan_tworzenia_aplikacji.md) | Harmonogram tygodniowy (14.07 → 15.09.2026) z kamieniami milowymi |
+| [docs/plan_t2_implementacja.md](docs/plan_t2_implementacja.md) | Szczegółowy plan implementacji tygodnia 2 (import, flota, haversine) |
+| [docs/plan_t3_implementacja.md](docs/plan_t3_implementacja.md) | Szczegółowy plan implementacji tygodnia 3 (CP-SAT przydział) |
+| [docs/otwarte_wejscia_zespolu.md](docs/otwarte_wejscia_zespolu.md) | Brakujące dane od zespołu (Patryk/Sandra/Martyna) + checklista podmiany |
+| [docs/walkthrough_t2.md](docs/walkthrough_t2.md) | Postęp T2: co działa, jak przetestować |
+| [docs/walkthrough_t3.md](docs/walkthrough_t3.md) | Postęp T3: przydział CP-SAT |
 | [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania funkcjonalne (FR) i niefunkcjonalne (NFR) |
 | [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Karta projektu: infrastruktura, zespół, fazy wdrożenia |
 | [AGENTS.md](AGENTS.md) | Reguły dla agentów AI piszących kod w tym repozytorium |

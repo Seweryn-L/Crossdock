@@ -63,7 +63,7 @@ select = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["crossdock/domain", "crossdock/services"]
+files = ["crossdock/domain", "crossdock/services", "crossdock/optimization"]
 strict = true
 
 [[tool.mypy.overrides]]

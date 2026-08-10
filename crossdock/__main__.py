@@ -37,10 +37,23 @@ def _seed_admin() -> None:
         logger.info("Utworzono startowe konto administratora 'admin'.")
 
 
+def _seed_fleet() -> None:
+    from crossdock.services.fleet import seed_placeholder_fleet
+
+    with session_scope() as session:
+        added = seed_placeholder_fleet(session)
+    if added:
+        logger.info(
+            "Utworzono {} pojazdów placeholder (PLACEHOLDER_PENDING_MARTYNA / W-03).",
+            added,
+        )
+
+
 def main() -> None:
     _configure_logging()
     settings = get_settings()
     _seed_admin()
+    _seed_fleet()
 
     # Imports register @ui.page routes and the auth middleware.
     from crossdock.ui import login_page, pages  # noqa: F401

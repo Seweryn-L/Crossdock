@@ -81,3 +81,71 @@ class AuditLogRow(Base):
     username: Mapped[str] = mapped_column(String(100))
     action: Mapped[str] = mapped_column(String(100))
     details: Mapped[str | None] = mapped_column(String)  # JSON as TEXT
+
+
+class VehicleRow(Base):
+    """Fleet vehicle. Seed rows are placeholders until Martyna's table (W-03)."""
+
+    __tablename__ = "vehicles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20))
+    pallet_capacity: Mapped[int]
+    weight_capacity_kg: Mapped[float]
+    is_active: Mapped[bool] = mapped_column(default=True)
+    is_placeholder: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class LocationCoordsRow(Base):
+    """MVP coordinate dictionary (manual / seeded; Photon later)."""
+
+    __tablename__ = "location_coords"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location_key: Mapped[str] = mapped_column(String(400), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    city: Mapped[str | None] = mapped_column(String(100))
+    country: Mapped[str | None] = mapped_column(String(10))
+    postal_code: Mapped[str | None] = mapped_column(String(20))
+    latitude: Mapped[float]
+    longitude: Mapped[float]
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AssignmentRunRow(Base):
+    """One CP-SAT assignment run (T3); routes/approval come in T4."""
+
+    __tablename__ = "assignment_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    username: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(40))
+    wall_time_s: Mapped[float]
+    unassigned_count: Mapped[int]
+    warnings_json: Mapped[str | None] = mapped_column(String)
+
+    items: Mapped[list["AssignmentItemRow"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class AssignmentItemRow(Base):
+    """Order assigned to a vehicle within an assignment run."""
+
+    __tablename__ = "assignment_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("assignment_runs.id", ondelete="CASCADE"))
+    vehicle_id: Mapped[int | None]
+    vehicle_code: Mapped[str] = mapped_column(String(50))
+    order_id: Mapped[int]
+    delivery_code: Mapped[str] = mapped_column(String(100))
+    weight_kg: Mapped[float]
+    fill_ratio: Mapped[float | None]
+
+    run: Mapped[AssignmentRunRow] = relationship(back_populates="items")

@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     port: int = 8080
     session_max_idle_minutes: int = 60
     default_delivery_days: int = 7
+    # Excel column mapping — placeholder until Sandra's dictionary (W-02).
+    excel_mapping_path: Path = Path("config/excel_column_mapping.json")
+    upload_max_mb: int = 20
+    # Cross-dock depot approx. Herentals / ~30 km from Antwerp (MVP seed).
+    depot_latitude: float = 51.176
+    depot_longitude: float = 4.836
+    # Business thresholds (proposals from SRS §9.2 — keep in config, not code).
+    min_fill_ratio: float = 0.90
+    max_drops_per_route: int = 3
+    # CP-SAT assignment (T3) — hard time limit + seed for reproducibility.
+    solver_time_limit_s: float = 45.0
+    solver_seed: int = 42
 
     @property
     def database_url(self) -> str:

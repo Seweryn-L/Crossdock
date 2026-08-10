@@ -55,12 +55,13 @@ Struktura pakietu `crossdock/`:
 
 ## Dane testowe
 
-`tests/fixtures/przykladowe_dane_od_firmy.xlsx` — bogaty raport e2open (45 kolumn, nagłówek w wierszu 3,
+`tests/fixtures/przykładowe_dane_od_firmy.xlsx` — bogaty raport e2open (46 kolumn, nagłówek w wierszu 3,
 wiersz 1 to metadane; rozbite adresy miasto/kraj/kod, wagi w kg, daty MM/DD/YYYY jako tekst).
-To DOCELOWY format importu.
+To DOCELOWY format importu. Mapowanie: `config/excel_column_mapping.json`.
 
-`tests/fixtures/przykladowe_dane_wygenerowane_z_systemu_TMS.xlsx` — okrojony raport (25 kolumn,
+`tests/fixtures/przykładowe_dane_wygenerowane_z_systemu_TMS.xlsx` — okrojony raport (25 kolumn,
 nagłówek w wierszu 1; adres tylko nazwą odbiorcy, wagi w FUNTACH, objętość w stopach szesciennych).
+Wsparcie drugiego formatu — osobne mapowanie / Faza późniejsza; nie jest domyślnym importem T2.
 
-Uwaga: żaden plik nie zawiera liczby palet (wymaganie FR-004) — kwestia otwarta, wyjaśniana z firmą.
+Uwaga: żaden plik nie zawiera liczby palet (wymaganie FR-004) — kwestia otwarta, wyjaśniana z firmą (W-04).
 Słowniki sprzętu różnią się między plikami ("Flatbed" vs "EU: 09 CURTAIN / BOX TRAILER") — mapuj przez konfigurację.
