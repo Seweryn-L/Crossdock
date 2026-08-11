@@ -63,7 +63,7 @@ from crossdock.ui.labels import (
     plan_status_pl,
     queue_status_pl,
 )
-from crossdock.ui.layout import page_frame
+from crossdock.ui.layout import ops_page_header, page_frame
 
 
 def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
@@ -196,67 +196,34 @@ def _update_pallets_job(order_id: int, total: int, username: str):
 async def dashboard_page() -> None:
     with page_frame("Pulpit"):
         snap = await run.io_bound(_load_dashboard)
+        username = app.storage.user.get("username", "unknown")
 
-        with ui.element("div").classes("cd-card-info w-full"):
-            ui.label("Pulpit dyspozytora").classes("text-xl font-bold")
-            ui.label(
-                "Import zleceń, planowanie transportów całopojazdowych, "
-                "mapa tras, magazyn i raporty."
-            ).classes("text-sm text-gray-700")
-
-        with ui.row().classes("w-full flex-wrap gap-3"):
-            for value, label in [
-                (snap.total_orders, "Zlecenia łącznie"),
-                (snap.new_orders, "Nowe"),
-                (snap.planned_orders, "Zaplanowane"),
-                (snap.approved_orders, "Zatwierdzone"),
-            ]:
-                with ui.element("div").classes("cd-stat"):
-                    ui.label(str(value)).classes("cd-stat-value")
-                    ui.label(label).classes("cd-stat-label")
-
-        with ui.row().classes("w-full flex-wrap gap-3"):
-            with ui.element("div").classes("cd-card flex-1 min-w-[240px]"):
-                ui.label("Ostatni plan").classes("font-medium")
-                if snap.latest_plan_id is None:
-                    ui.label("Brak wygenerowanego planu.").classes("text-sm text-gray-600")
-                else:
-                    ui.label(f"Plan #{snap.latest_plan_id} · {snap.latest_plan_status_pl}").classes(
-                        "text-sm"
-                    )
-                    ui.label(
-                        f"Jedzie: {snap.riding} · Zostaje: {snap.staying} · "
-                        f"Wymaga uwagi: {snap.attention}"
-                    ).classes("text-sm text-gray-600")
-            with ui.element("div").classes("cd-card flex-1 min-w-[200px]"):
-                ui.label("Kolejka magazynowa").classes("font-medium")
-                ui.label(str(snap.queue_count)).classes("cd-stat-value")
-                ui.label("pozycji w kolejce").classes("cd-stat-label")
-            with ui.element("div").classes("cd-card flex-1 min-w-[240px]"):
-                ui.label("Ostatni import").classes("font-medium")
-                ui.label(snap.last_import_summary or "Brak danych w audycie.").classes(
-                    "text-sm text-gray-600"
-                )
-
-        with ui.row().classes("cd-toolbar w-full"):
-            ui.button(
-                "Zlecenia",
-                icon="list_alt",
-                on_click=lambda: ui.navigate.to("/orders"),
-            ).props("outline")
-            ui.button("Plany", icon="route", on_click=lambda: ui.navigate.to("/plans")).props(
-                "outline"
+        async def on_enqueue_staying() -> None:
+            ids = list(snap.staying_order_ids)
+            if not ids:
+                ui.notify("Brak zleceń do dodania do kolejki.", type="info")
+                return
+            added = await run.io_bound(_enqueue_staying_job, ids, username)
+            ui.notify(
+                f"Dodano do kolejki: {added}."
+                if added
+                else "Nic nie dodano (już w kolejce lub inny status).",
+                type="positive" if added else "info",
             )
-            ui.button(
-                "Magazyn",
-                icon="warehouse",
-                on_click=lambda: ui.navigate.to("/warehouse"),
-            ).props("outline")
-            ui.button(
-                "Raporty",
-                icon="bar_chart",
-                on_click=lambda: ui.navigate.to("/reports"),
-            ).props("outline")
+
+        def open_map() -> None:
+            if snap.latest_plan_id is None:
+                ui.navigate.to("/map")
+            else:
+                ui.navigate.to(f"/map?run_id={snap.latest_plan_id}")
+
+        from crossdock.ui.ops_dashboard import render_ops_focus_dashboard
+
+        render_ops_focus_dashboard(
+            snap,
+            on_enqueue_staying=on_enqueue_staying,
+            open_map=open_map,
+        )
 
 
 @ui.page("/orders")
@@ -264,9 +231,13 @@ async def orders_page() -> None:
     username = app.storage.user.get("username", "unknown")
 
     with page_frame("Zlecenia"):
+        ops_page_header(
+            "Zlecenia",
+            "Import z Excela i przegląd zleceń. Statusy w UI po polsku.",
+        )
         session_import = app.storage.user.get("last_import")
         if isinstance(session_import, dict):
-            tone = "cd-card-info" if int(session_import.get("rejected", 0)) == 0 else "cd-card"
+            tone = "cd-ops-hero" if int(session_import.get("rejected", 0)) == 0 else "cd-ops-panel"
             with ui.element("div").classes(f"w-full {tone}"):
                 ui.label(
                     f"Ostatni import (sesja): przyjęto {session_import.get('accepted', 0)}, "
@@ -276,12 +247,12 @@ async def orders_page() -> None:
         else:
             last_import = await run.io_bound(_load_last_import_summary)
             if last_import:
-                with ui.element("div").classes("w-full cd-card-info"):
+                with ui.element("div").classes("w-full cd-ops-hero"):
                     ui.label(f"Ostatni import: {last_import}").classes("text-sm text-gray-700")
 
         error_box = ui.column().classes("w-full gap-1")
 
-        with ui.element("div").classes("cd-card w-full gap-3"):
+        with ui.element("div").classes("cd-ops-panel w-full gap-3"):
             status_label = ui.label("").classes("text-sm text-gray-700 font-medium")
             hint_label = ui.label("").classes("text-xs text-gray-500")
 
@@ -508,7 +479,11 @@ async def plans_page() -> None:
     username = app.storage.user.get("username", "unknown")
     settings = get_settings()
     with page_frame("Plany"):
-        with ui.element("div").classes("cd-card-info w-full"):
+        ops_page_header(
+            "Plany",
+            "Generowanie i zatwierdzanie transportów całopojazdowych.",
+        )
+        with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Plan transportów całopojazdowych").classes("font-bold")
             ui.label(
                 "System proponuje pełne auta z cross-docku. "
@@ -521,7 +496,7 @@ async def plans_page() -> None:
         ctx = await run.io_bound(_load_planning_context)
         staying_ids: list[int] = []
 
-        with ui.element("div").classes("cd-card w-full"):
+        with ui.element("div").classes("cd-ops-panel w-full"):
             stats_label = ui.label("").classes("text-sm text-gray-700 font-medium")
             summary_label = ui.label("").classes("text-sm text-gray-700")
             blocker_label = ui.label("").classes("text-sm text-red-700")
@@ -879,9 +854,13 @@ def _load_map_view(run_id: int | None) -> MapPlanView | None:
 @ui.page("/map")
 async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
+        ops_page_header(
+            "Mapa",
+            "Trasy planu (haversine). Strzałki = kierunek jazdy od magazynu.",
+        )
         view = await run.io_bound(_load_map_view, run_id)
         if view is None:
-            with ui.element("div").classes("cd-card w-full"):
+            with ui.element("div").classes("cd-ops-panel w-full"):
                 ui.label("Brak planu do wyświetlenia.").classes("font-bold text-lg")
                 ui.label("Wygeneruj plan na stronie Plany, potem wróć tutaj.").classes(
                     "text-gray-600"
@@ -889,7 +868,7 @@ async def map_page(run_id: int | None = None) -> None:
                 ui.button("Przejdź do Planów", on_click=lambda: ui.navigate.to("/plans"))
             return
 
-        with ui.element("div").classes("cd-card w-full"):
+        with ui.element("div").classes("cd-ops-panel w-full"):
             ui.label(
                 f"Plan #{view.run_id} · {plan_status_pl(view.plan_status)} · "
                 f"pojazdów na mapie: {len(view.routes)}"
@@ -986,7 +965,11 @@ async def map_page(run_id: int | None = None) -> None:
 @ui.page("/reports")
 async def reports_page() -> None:
     with page_frame("Raporty"):
-        with ui.element("div").classes("cd-card-info w-full"):
+        ops_page_header(
+            "Raporty",
+            "Zapełnienie i oszczędności względem scenariusza 1 zlecenie = 1 pojazd.",
+        )
+        with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Efektywność planu").classes("font-bold")
             ui.label(
                 "Zapełnienie wagowe pojazdów oraz oszczędności względem "
@@ -1066,7 +1049,11 @@ def _export_report_bytes() -> bytes | None:
 async def warehouse_page() -> None:
     username = app.storage.user.get("username", "unknown")
     with page_frame("Magazyn"):
-        with ui.element("div").classes("cd-card-info w-full"):
+        ops_page_header(
+            "Magazyn",
+            "Kolejka priorytetowa wydań i propozycja buforowania kosztowego.",
+        )
+        with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Kolejka magazynowa").classes("font-bold")
             ui.label(
                 "Ręczny priorytet wydań (całe zlecenia). "
@@ -1349,7 +1336,11 @@ def _run_backup_job():
 @ui.page("/system")
 async def system_page() -> None:
     with page_frame("Stan systemu"):
-        with ui.element("div").classes("cd-card-info w-full"):
+        ops_page_header(
+            "Stan systemu",
+            "Podgląd bazy, planu, dysku, kopii zapasowej i ogona logów.",
+        )
+        with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Stan systemu").classes("font-bold")
             ui.label("Podgląd bazy, planu, dysku, kopii zapasowej i ogona logów.").classes(
                 "text-sm text-gray-700"
@@ -1544,13 +1535,17 @@ PARAM_LABELS_PL = {
 async def settings_page() -> None:
     username = app.storage.user.get("username", "unknown")
     with page_frame("Ustawienia"):
+        ops_page_header(
+            "Ustawienia",
+            "Flota, lokalizacje i parametry biznesowe (bez sekretów / host / port).",
+        )
         with ui.tabs().classes("w-full") as tabs:
             tab_fleet = ui.tab("Flota")
             tab_locations = ui.tab("Lokalizacje")
             tab_params = ui.tab("Parametry")
         with ui.tab_panels(tabs, value=tab_fleet).classes("w-full"):
             with ui.tab_panel(tab_fleet):
-                with ui.element("div").classes("cd-card-info w-full mb-2"):
+                with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Flota pojazdów").classes("font-bold")
                 vehicles = await run.io_bound(_load_vehicles)
                 grid = (
@@ -1619,7 +1614,7 @@ async def settings_page() -> None:
                     ui.button("Edytuj zaznaczony", on_click=on_edit_vehicle)
 
             with ui.tab_panel(tab_locations):
-                with ui.element("div").classes("cd-card-info w-full mb-2"):
+                with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Słownik współrzędnych").classes("font-bold")
                 locations = await run.io_bound(_load_locations)
                 loc_status = ui.label(f"Wpisów: {len(locations)}").classes("text-sm")
@@ -1709,7 +1704,7 @@ async def settings_page() -> None:
                     )
 
             with ui.tab_panel(tab_params):
-                with ui.element("div").classes("cd-card-info w-full mb-2"):
+                with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Parametry biznesowe").classes("font-bold")
                     ui.label(
                         "Zapis w data/runtime_settings.json (nadpisuje .env). Bez sekretów i hosta."

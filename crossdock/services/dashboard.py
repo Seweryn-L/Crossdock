@@ -27,6 +27,7 @@ class DashboardSnapshot:
     attention: int
     queue_count: int
     last_import_summary: str | None
+    staying_order_ids: tuple[int, ...]
 
 
 def collect_dashboard(session: Session) -> DashboardSnapshot:
@@ -53,4 +54,5 @@ def collect_dashboard(session: Session) -> DashboardSnapshot:
         attention=view.summary.attention if view.summary else 0,
         queue_count=queue_count,
         last_import_summary=status.last_import_summary,
+        staying_order_ids=view.staying_order_ids if view.summary else (),
     )
