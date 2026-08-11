@@ -49,11 +49,46 @@ def _seed_fleet() -> None:
         )
 
 
+def _seed_locations() -> None:
+    from crossdock.services.locations import seed_location_coords
+
+    with session_scope() as session:
+        added = seed_location_coords(session)
+    if added:
+        logger.info("Uzupełniono słownik lokalizacji seedem ({} wpisów).", added)
+
+
+def _start_backup_scheduler() -> None:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+
+    from crossdock.services.backup import run_backup
+
+    settings = get_settings()
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        run_backup,
+        CronTrigger(hour=settings.backup_hour, minute=settings.backup_minute),
+        id="sqlite_nightly_backup",
+        replace_existing=True,
+    )
+    scheduler.start()
+    app.on_shutdown(scheduler.shutdown)
+    logger.info(
+        "Zaplanowano nocny backup SQLite o {:02d}:{:02d} → {}",
+        settings.backup_hour,
+        settings.backup_minute,
+        settings.backup_dir,
+    )
+
+
 def main() -> None:
     _configure_logging()
     settings = get_settings()
     _seed_admin()
     _seed_fleet()
+    _seed_locations()
+    _start_backup_scheduler()
 
     # Imports register @ui.page routes and the auth middleware.
     from crossdock.ui import login_page, pages  # noqa: F401

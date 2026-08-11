@@ -21,3 +21,11 @@ def tms_orders_fixture() -> Path:
     if not matches:
         raise FileNotFoundError(f"Brak fixture TMS w {FIXTURES_DIR} (*z_systemu_TMS.xlsx)")
     return matches[0]
+
+
+def june_carrier_load_fixture() -> Path:
+    """June 2026 e2open carrier load status sample (primary demo dataset)."""
+    path = FIXTURES_DIR / "carrier_load_status1620780.xlsx"
+    if not path.is_file():
+        raise FileNotFoundError(f"Brak fixture czerwcowego: {path}")
+    return path

@@ -23,6 +23,8 @@ def _enrich_location(location: Location, coords: LocationCoordsRepository) -> Lo
         return location
     known = coords.get(location.location_key())
     if known is None:
+        known = coords.find_by_city_country(location.city, location.country)
+    if known is None:
         return location
     return location.model_copy(update={"latitude": known.latitude, "longitude": known.longitude})
 

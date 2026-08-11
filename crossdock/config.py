@@ -4,11 +4,36 @@ Business thresholds (e.g. default delivery days, FR-024) live here,
 not in code, per project convention.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Keys editable from Ustawienia → Parametry (runtime JSON overlay).
+EDITABLE_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "depot_latitude",
+        "depot_longitude",
+        "min_fill_ratio",
+        "max_drops_per_route",
+        "solver_time_limit_s",
+        "solver_seed",
+        "default_delivery_days",
+        "cost_per_km",
+        "storage_cost_per_pallet_day",
+        "ltl_cost_multiplier",
+        "buffer_savings_threshold",
+        "max_buffer_days",
+        "upload_max_mb",
+        "backup_keep",
+        "backup_hour",
+        "backup_minute",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -38,18 +63,44 @@ class Settings(BaseSettings):
     # CP-SAT assignment (T3) — hard time limit + seed for reproducibility.
     solver_time_limit_s: float = 45.0
     solver_seed: int = 42
+    # Placeholder freight rate until Sandra's rates (W-06); used for plan cost display.
+    cost_per_km: float = 1.2
+    # FR-022 buffering placeholders (W-06) — replace after Sandra's rates.
+    buffer_savings_threshold: float = 0.15
+    storage_cost_per_pallet_day: float = 2.0
+    ltl_cost_multiplier: float = 1.8
+    max_buffer_days: int = 3
+    backup_dir: Path = Path("data/backups")
+    backup_keep: int = 14
+    backup_hour: int = 2
+    backup_minute: int = 30
 
     @property
     def database_url(self) -> str:
         return f"sqlite:///{self.db_path}"
 
 
+def _apply_runtime_overrides(settings: Settings) -> Settings:
+    """Overlay data/runtime_settings.json onto env-loaded settings."""
+    from crossdock.services.app_settings import load_runtime_overrides
+
+    overrides = load_runtime_overrides()
+    if not overrides:
+        return settings
+    data: dict[str, Any] = settings.model_dump()
+    for key, value in overrides.items():
+        if key in EDITABLE_SETTING_KEYS:
+            data[key] = value
+    return Settings.model_validate(data)
+
+
 @lru_cache
 def get_settings() -> Settings:
     try:
-        return Settings()  # type: ignore[call-arg]
+        base = Settings()  # type: ignore[call-arg]
     except Exception as exc:
         raise RuntimeError(
             "Brak poprawnej konfiguracji. Skopiuj .env.example do .env i uzupełnij "
             "wartości (w szczególności CROSSDOCK_STORAGE_SECRET)."
         ) from exc
+    return _apply_runtime_overrides(base)

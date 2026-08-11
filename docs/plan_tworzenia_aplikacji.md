@@ -73,6 +73,9 @@
 > Śledzenie braków, ownerów i checklisty po dostarczeniu: [`otwarte_wejscia_zespolu.md`](otwarte_wejscia_zespolu.md).
 > Szczegółowy plan implementacji T2: [`plan_t2_implementacja.md`](plan_t2_implementacja.md).
 > Szczegółowy plan implementacji T3: [`plan_t3_implementacja.md`](plan_t3_implementacja.md).
+> Szczegółowy plan implementacji T4: [`plan_t4_implementacja.md`](plan_t4_implementacja.md).
+> Szczegółowy plan implementacji T5: [`plan_t5_implementacja.md`](plan_t5_implementacja.md).
+> Szczegółowy plan implementacji T6: [`plan_t6_implementacja.md`](plan_t6_implementacja.md).
 
 | Wejście | Od kogo | Potrzebne najpóźniej | Blokuje | Status |
 | :--- | :--- | :--- | :--- | :--- |

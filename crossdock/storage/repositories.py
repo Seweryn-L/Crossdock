@@ -20,6 +20,7 @@ from crossdock.domain.models import (
 )
 from crossdock.storage.tables import (
     AssignmentItemRow,
+    AssignmentRouteRow,
     AssignmentRunRow,
     AuditLogRow,
     LocationCoordsRow,
@@ -27,6 +28,7 @@ from crossdock.storage.tables import (
     ShipmentRow,
     UserRow,
     VehicleRow,
+    WarehouseQueueRow,
 )
 
 
@@ -197,6 +199,55 @@ class OrderRepository:
         )
         return _to_domain_order(row) if row else None
 
+    def delete_by_ids(self, order_ids: list[int]) -> int:
+        if not order_ids:
+            return 0
+        rows = self._session.scalars(select(OrderRow).where(OrderRow.id.in_(order_ids))).all()
+        for row in rows:
+            self._session.delete(row)
+        self._session.flush()
+        return len(rows)
+
+    def delete_all(self) -> int:
+        rows = self._session.scalars(select(OrderRow)).all()
+        count = len(rows)
+        for row in rows:
+            self._session.delete(row)
+        self._session.flush()
+        return count
+
+    def count_by_status(self, status: OrderStatus) -> int:
+        return len(
+            self._session.scalars(select(OrderRow.id).where(OrderRow.status == status.value)).all()
+        )
+
+    def set_status_many(self, order_ids: list[int], status: OrderStatus) -> int:
+        if not order_ids:
+            return 0
+        rows = self._session.scalars(select(OrderRow).where(OrderRow.id.in_(order_ids))).all()
+        for row in rows:
+            row.status = status.value
+        self._session.flush()
+        return len(rows)
+
+    def update_order_pallets(self, order_id: int, total_pallets: int) -> Order:
+        """Set order total pallets on first shipment; others → 0 (FR-021 MVP)."""
+        if total_pallets < 0:
+            raise ValueError("Liczba palet nie może być ujemna.")
+        row = self._session.scalar(
+            select(OrderRow)
+            .options(selectinload(OrderRow.shipments))
+            .where(OrderRow.id == order_id)
+        )
+        if row is None:
+            raise ValueError(f"Zlecenie #{order_id} nie istnieje.")
+        if not row.shipments:
+            raise ValueError(f"Zlecenie #{order_id} nie ma przesyłek.")
+        for idx, shipment in enumerate(row.shipments):
+            shipment.pallet_count = total_pallets if idx == 0 else 0
+        self._session.flush()
+        return _to_domain_order(row)
+
 
 class VehicleRepository:
     def __init__(self, session: Session) -> None:
@@ -311,6 +362,41 @@ class LocationCoordsRepository:
             for r in rows
         ]
 
+    def count(self) -> int:
+        return len(self._session.scalars(select(LocationCoordsRow.id)).all())
+
+    def delete_by_key(self, location_key: str) -> bool:
+        row = self._session.scalar(
+            select(LocationCoordsRow).where(LocationCoordsRow.location_key == location_key)
+        )
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.flush()
+        return True
+
+    def find_by_city_country(self, city: str | None, country: str | None) -> Location | None:
+        """Fallback lookup when exact location_key is missing (city centroid)."""
+        if not city:
+            return None
+        city_norm = city.strip().lower()
+        country_norm = (country or "").strip().lower()
+        rows = self._session.scalars(select(LocationCoordsRow)).all()
+        for row in rows:
+            if (row.city or "").strip().lower() != city_norm:
+                continue
+            if country_norm and (row.country or "").strip().lower() != country_norm:
+                continue
+            return Location(
+                name=row.name,
+                city=row.city,
+                country=row.country,
+                postal_code=row.postal_code,
+                latitude=row.latitude,
+                longitude=row.longitude,
+            )
+        return None
+
 
 class AssignmentRepository:
     def __init__(self, session: Session) -> None:
@@ -328,31 +414,86 @@ class AssignmentRepository:
         order_meta: dict[int, tuple[str, float]],
     ) -> int:
         """Persist assignment. ``loads`` items: vehicle_id, vehicle_code, order_ids, fill_ratio."""
+        return self.save_plan_run(
+            username=username,
+            status=status,
+            wall_time_s=wall_time_s,
+            warnings=warnings,
+            items=[],
+            routes=[],
+            unassigned_order_ids=unassigned_order_ids,
+            order_meta=order_meta,
+            loads=loads,
+            total_distance_km=None,
+            total_cost_eur=None,
+        )
+
+    def save_plan_run(
+        self,
+        *,
+        username: str,
+        status: str,
+        wall_time_s: float,
+        warnings: list[str],
+        items: list[dict[str, Any]],
+        routes: list[dict[str, Any]],
+        unassigned_order_ids: list[int],
+        order_meta: dict[int, tuple[str, float]],
+        loads: list[dict[str, Any]] | None = None,
+        total_distance_km: float | None = None,
+        total_cost_eur: float | None = None,
+    ) -> int:
+        """Persist a full plan (assignment items + routes).
+
+        ``items`` entries: vehicle_id, vehicle_code, order_id, fill_ratio,
+        sequence, drop_key.
+        When ``items`` is empty and ``loads`` is provided, expand loads (T3 compat).
+        """
         run = AssignmentRunRow(
             username=username,
             status=status,
             wall_time_s=wall_time_s,
             unassigned_count=len(unassigned_order_ids),
             warnings_json=json.dumps(warnings, ensure_ascii=False) if warnings else None,
+            plan_status="draft",
+            total_distance_km=total_distance_km,
+            total_cost_eur=total_cost_eur,
         )
         self._session.add(run)
         self._session.flush()
 
-        for load in loads:
-            fill = load.get("fill_ratio")
-            for order_id in load["order_ids"]:
-                code, weight = order_meta.get(int(order_id), ("?", 0.0))
-                self._session.add(
-                    AssignmentItemRow(
-                        run_id=run.id,
-                        vehicle_id=load.get("vehicle_id"),
-                        vehicle_code=str(load["vehicle_code"]),
-                        order_id=int(order_id),
-                        delivery_code=code,
-                        weight_kg=weight,
-                        fill_ratio=fill,
+        expanded = list(items)
+        if not expanded and loads:
+            for load in loads:
+                fill = load.get("fill_ratio")
+                for order_id in load["order_ids"]:
+                    expanded.append(
+                        {
+                            "vehicle_id": load.get("vehicle_id"),
+                            "vehicle_code": load["vehicle_code"],
+                            "order_id": int(order_id),
+                            "fill_ratio": fill,
+                            "sequence": None,
+                            "drop_key": None,
+                        }
                     )
+
+        for item in expanded:
+            order_id = int(item["order_id"])
+            code, weight = order_meta.get(order_id, ("?", 0.0))
+            self._session.add(
+                AssignmentItemRow(
+                    run_id=run.id,
+                    vehicle_id=item.get("vehicle_id"),
+                    vehicle_code=str(item["vehicle_code"]),
+                    order_id=order_id,
+                    delivery_code=code,
+                    weight_kg=weight,
+                    fill_ratio=item.get("fill_ratio"),
+                    sequence=item.get("sequence"),
+                    drop_key=item.get("drop_key"),
                 )
+            )
         for order_id in unassigned_order_ids:
             code, weight = order_meta.get(order_id, ("?", 0.0))
             self._session.add(
@@ -364,6 +505,19 @@ class AssignmentRepository:
                     delivery_code=code,
                     weight_kg=weight,
                     fill_ratio=None,
+                    sequence=None,
+                    drop_key=None,
+                )
+            )
+        for route in routes:
+            self._session.add(
+                AssignmentRouteRow(
+                    run_id=run.id,
+                    vehicle_id=route.get("vehicle_id"),
+                    vehicle_code=str(route["vehicle_code"]),
+                    drop_count=int(route["drop_count"]),
+                    distance_km=float(route["distance_km"]),
+                    cost_eur=float(route["cost_eur"]),
                 )
             )
         self._session.flush()
@@ -375,11 +529,140 @@ class AssignmentRepository:
         )
         return row.id if row else None
 
+    def get_run(self, run_id: int) -> AssignmentRunRow | None:
+        return self._session.scalar(select(AssignmentRunRow).where(AssignmentRunRow.id == run_id))
+
+    def get_latest_run(self) -> AssignmentRunRow | None:
+        return self._session.scalar(
+            select(AssignmentRunRow).order_by(AssignmentRunRow.id.desc()).limit(1)
+        )
+
+    def get_latest_approved_run(self) -> AssignmentRunRow | None:
+        return self._session.scalar(
+            select(AssignmentRunRow)
+            .where(AssignmentRunRow.plan_status == "approved")
+            .order_by(AssignmentRunRow.id.desc())
+            .limit(1)
+        )
+
     def list_items_for_run(self, run_id: int) -> list[AssignmentItemRow]:
         return list(
             self._session.scalars(
                 select(AssignmentItemRow)
                 .where(AssignmentItemRow.run_id == run_id)
-                .order_by(AssignmentItemRow.vehicle_code, AssignmentItemRow.delivery_code)
+                .order_by(
+                    AssignmentItemRow.vehicle_code,
+                    AssignmentItemRow.sequence.nulls_last(),
+                    AssignmentItemRow.delivery_code,
+                )
             ).all()
         )
+
+    def list_routes_for_run(self, run_id: int) -> list[AssignmentRouteRow]:
+        return list(
+            self._session.scalars(
+                select(AssignmentRouteRow)
+                .where(AssignmentRouteRow.run_id == run_id)
+                .order_by(AssignmentRouteRow.vehicle_code)
+            ).all()
+        )
+
+    def approve_run(self, run_id: int, *, username: str) -> AssignmentRunRow:
+        from datetime import UTC, datetime
+
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        if run.plan_status == "approved":
+            raise ValueError(f"Plan run #{run_id} jest już zatwierdzony.")
+        run.plan_status = "approved"
+        run.approved_at = datetime.now(UTC).replace(tzinfo=None)
+        run.approved_by = username
+        self._session.flush()
+        return run
+
+    def set_run_status(self, run_id: int, *, plan_status: str) -> AssignmentRunRow:
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        run.plan_status = plan_status
+        if plan_status != "approved":
+            run.approved_at = None
+            run.approved_by = None
+        self._session.flush()
+        return run
+
+    def delete_run(self, run_id: int) -> None:
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        self._session.delete(run)
+        self._session.flush()
+
+
+class WarehouseQueueRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_ordered(self) -> list[WarehouseQueueRow]:
+        return list(
+            self._session.scalars(
+                select(WarehouseQueueRow).order_by(WarehouseQueueRow.position)
+            ).all()
+        )
+
+    def get_by_order_id(self, order_id: int) -> WarehouseQueueRow | None:
+        return self._session.scalar(
+            select(WarehouseQueueRow).where(WarehouseQueueRow.order_id == order_id)
+        )
+
+    def next_position(self) -> int:
+        rows = self.list_ordered()
+        if not rows:
+            return 1
+        return max(r.position for r in rows) + 1
+
+    def add(
+        self, *, order_id: int, status: str = "waiting", note: str | None = None
+    ) -> WarehouseQueueRow:
+        if self.get_by_order_id(order_id) is not None:
+            raise ValueError(f"Zlecenie #{order_id} jest już w kolejce.")
+        row = WarehouseQueueRow(
+            order_id=order_id,
+            position=self.next_position(),
+            status=status,
+            note=note,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def delete_by_order_id(self, order_id: int) -> bool:
+        row = self.get_by_order_id(order_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.flush()
+        self._repack_positions()
+        return True
+
+    def set_status(self, order_id: int, status: str) -> WarehouseQueueRow:
+        row = self.get_by_order_id(order_id)
+        if row is None:
+            raise ValueError(f"Zlecenie #{order_id} nie jest w kolejce.")
+        row.status = status
+        self._session.flush()
+        return row
+
+    def swap_positions(self, order_id_a: int, order_id_b: int) -> None:
+        a = self.get_by_order_id(order_id_a)
+        b = self.get_by_order_id(order_id_b)
+        if a is None or b is None:
+            raise ValueError("Oba zlecenia muszą być w kolejce.")
+        a.position, b.position = b.position, a.position
+        self._session.flush()
+
+    def _repack_positions(self) -> None:
+        for idx, row in enumerate(self.list_ordered(), start=1):
+            row.position = idx
+        self._session.flush()

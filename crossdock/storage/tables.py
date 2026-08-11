@@ -117,7 +117,7 @@ class LocationCoordsRow(Base):
 
 
 class AssignmentRunRow(Base):
-    """One CP-SAT assignment run (T3); routes/approval come in T4."""
+    """One plan run: CP-SAT assignment + routing (T3/T4)."""
 
     __tablename__ = "assignment_runs"
 
@@ -128,8 +128,16 @@ class AssignmentRunRow(Base):
     wall_time_s: Mapped[float]
     unassigned_count: Mapped[int]
     warnings_json: Mapped[str | None] = mapped_column(String)
+    plan_status: Mapped[str] = mapped_column(String(20), default="draft")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    total_distance_km: Mapped[float | None]
+    total_cost_eur: Mapped[float | None]
 
     items: Mapped[list["AssignmentItemRow"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    routes: Mapped[list["AssignmentRouteRow"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
 
@@ -147,5 +155,38 @@ class AssignmentItemRow(Base):
     delivery_code: Mapped[str] = mapped_column(String(100))
     weight_kg: Mapped[float]
     fill_ratio: Mapped[float | None]
+    sequence: Mapped[int | None]
+    drop_key: Mapped[str | None] = mapped_column(String(200))
 
     run: Mapped[AssignmentRunRow] = relationship(back_populates="items")
+
+
+class AssignmentRouteRow(Base):
+    """Per-vehicle route metrics for a plan run (T4)."""
+
+    __tablename__ = "assignment_routes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("assignment_runs.id", ondelete="CASCADE"))
+    vehicle_id: Mapped[int | None]
+    vehicle_code: Mapped[str] = mapped_column(String(50))
+    drop_count: Mapped[int]
+    distance_km: Mapped[float]
+    cost_eur: Mapped[float]
+
+    run: Mapped[AssignmentRunRow] = relationship(back_populates="routes")
+
+
+class WarehouseQueueRow(Base):
+    """Manual warehouse queue entry — whole orders only (FR-019 / FR-020)."""
+
+    __tablename__ = "warehouse_queue"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), unique=True)
+    position: Mapped[int]
+    status: Mapped[str] = mapped_column(String(20), default="waiting")
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
