@@ -10,7 +10,13 @@ ORDER_STATUS_PL: dict[str, str] = {
 
 PLAN_STATUS_PL: dict[str, str] = {
     "draft": "roboczy",
+    "partial": "częściowo zatwierdzony",
     "approved": "zatwierdzony",
+}
+
+ROUTE_STATUS_PL: dict[str, str] = {
+    "proposed": "propozycja",
+    "approved": "zatwierdzona",
 }
 
 QUEUE_STATUS_PL: dict[str, str] = {
@@ -37,6 +43,12 @@ def plan_status_pl(code: str | None) -> str:
     if code is None:
         return "—"
     return PLAN_STATUS_PL.get(str(code), str(code))
+
+
+def route_status_pl(code: str | None) -> str:
+    if code is None:
+        return "—"
+    return ROUTE_STATUS_PL.get(str(code), str(code))
 
 
 def queue_status_pl(code: str | None) -> str:

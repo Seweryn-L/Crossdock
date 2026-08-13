@@ -38,14 +38,20 @@ def _seed_admin() -> None:
 
 
 def _seed_fleet() -> None:
-    from crossdock.services.fleet import seed_placeholder_fleet
+    from crossdock.services.fleet import seed_placeholder_fleet, sync_fleet_capacities_from_seed
 
     with session_scope() as session:
         added = seed_placeholder_fleet(session)
+        synced = sync_fleet_capacities_from_seed(session)
     if added:
         logger.info(
-            "Utworzono {} pojazdów placeholder (PLACEHOLDER_PENDING_MARTYNA / W-03).",
+            "Utworzono {} pojazdów floty (pojemności z FLota / W-03).",
             added,
+        )
+    if synced:
+        logger.info(
+            "Zsynchronizowano pojemności {} pojazdów ze seedem Martyny (W-03).",
+            synced,
         )
 
 
@@ -93,7 +99,15 @@ def main() -> None:
     # Imports register @ui.page routes and the auth middleware.
     from crossdock.ui import login_page, pages  # noqa: F401
     from crossdock.ui.auth_middleware import AuthMiddleware
+    from crossdock.ui.layout import (
+        ThemeHtmlMiddleware,
+        register_theme_bootstrap,
+        register_ui_static,
+    )
 
+    register_ui_static()
+    register_theme_bootstrap()
+    app.add_middleware(ThemeHtmlMiddleware)
     app.add_middleware(AuthMiddleware)
 
     logger.info("Start serwera Crossdock na {}:{}", settings.host, settings.port)

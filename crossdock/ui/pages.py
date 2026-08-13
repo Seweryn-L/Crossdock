@@ -62,8 +62,15 @@ from crossdock.ui.labels import (
     order_status_pl,
     plan_status_pl,
     queue_status_pl,
+    route_status_pl,
 )
 from crossdock.ui.layout import ops_page_header, page_frame
+from crossdock.ui.widgets import (
+    attach_grid_enlarge,
+    enlarge_grid_button,
+    info_hint,
+    selection_column,
+)
 
 
 def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
@@ -111,18 +118,49 @@ def _delete_all_orders(username: str) -> int:
 def _load_planning_context() -> dict[str, object]:
     with session_scope() as session:
         counts = order_counts(session)
-        active_vehicles = VehicleRepository(session).list_active()
+        vehicle_repo = VehicleRepository(session)
+        active_vehicles = vehicle_repo.list_active()
+        available_vehicles = vehicle_repo.list_available()
         latest = AssignmentRepository(session).get_latest_run()
+        busy = sum(1 for v in active_vehicles if v.is_busy)
+        fleet_rows = [
+            {
+                "id": v.id,
+                "code": v.code,
+                "vehicle_type": v.vehicle_type.value,
+                "is_busy": v.is_busy,
+            }
+            for v in sorted(active_vehicles, key=lambda x: (x.is_busy, x.code))
+        ]
         return {
             "total_orders": counts.total,
             "new_orders": counts.new_status,
             "eligible_orders": counts.new_with_weight,
             "active_vehicles": len(active_vehicles),
+            "available_vehicles": len(available_vehicles),
+            "busy_vehicles": busy,
+            "fleet_rows": fleet_rows,
             "plan_status": latest.plan_status if latest is not None else None,
             "latest_run_id": latest.id if latest is not None else None,
             "total_distance_km": latest.total_distance_km if latest else None,
             "total_cost_eur": latest.total_cost_eur if latest else None,
         }
+
+
+def _approve_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
+    with session_scope() as session:
+        outcome = PlanningService(session).approve_route(
+            run_id=run_id, vehicle_id=vehicle_id, username=username
+        )
+        return outcome.run_id, len(outcome.approved_order_ids), outcome.vehicle_code or "?"
+
+
+def _unlock_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
+    with session_scope() as session:
+        outcome = PlanningService(session).unlock_route(
+            run_id=run_id, vehicle_id=vehicle_id, username=username
+        )
+        return outcome.run_id, len(outcome.reset_order_ids), outcome.vehicle_code or "?"
 
 
 def _import_upload(path: Path, username: str) -> tuple[int, int, list[str]]:
@@ -233,7 +271,7 @@ async def orders_page() -> None:
     with page_frame("Zlecenia"):
         ops_page_header(
             "Zlecenia",
-            "Import z Excela i przegląd zleceń. Statusy w UI po polsku.",
+            "Import z Excela i przegląd zleceń.",
         )
         session_import = app.storage.user.get("last_import")
         if isinstance(session_import, dict):
@@ -254,7 +292,6 @@ async def orders_page() -> None:
 
         with ui.element("div").classes("cd-ops-panel w-full gap-3"):
             status_label = ui.label("").classes("text-sm text-gray-700 font-medium")
-            hint_label = ui.label("").classes("text-xs text-gray-500")
 
             with ui.row().classes("cd-toolbar w-full"):
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
@@ -266,6 +303,12 @@ async def orders_page() -> None:
                 )
                 pallets_btn = ui.button("Zmień palety", icon="pallet").props("outline")
                 pallets_btn.disable()
+                info_hint(
+                    "Gdy baza jest pusta, zaimportuj plik Excel, aby rozpocząć planowanie. "
+                    "Import doda nowe zlecenia. Usuń zaznaczone w tabeli. "
+                    "Zmień palety: dostępne po zatwierdzeniu planu; "
+                    "zaznacz jedno zlecenie zatwierdzone."
+                )
                 upload = (
                     ui.upload(
                         on_upload=lambda e: handle_upload(e),
@@ -280,39 +323,53 @@ async def orders_page() -> None:
                     icon="upload_file",
                     on_click=lambda: upload.run_method("pickFiles"),
                 ).props("color=primary")
+                info_hint(
+                    "Importuj raport Excel z TMS (nagłówek w trzecim wierszu arkusza). "
+                    "Kolumny mapuje konfiguracja importu."
+                )
+                enlarge_orders_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
+                )
 
-            ui.label(
-                "Format: raport e2open (nagłówek w wierszu 3). "
-                "Mapowanie: config/excel_column_mapping.json."
-            ).classes("text-xs text-gray-400")
-
-        grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
-                        {"headerName": "ID", "field": "id", "width": 70, "sortable": True},
-                        {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
-                        {"headerName": "Odbiorca", "field": "delivery_name", "filter": True},
-                        {"headerName": "Miasto", "field": "delivery_city", "filter": True},
-                        {
-                            "headerName": "Termin",
-                            "field": "delivery_date",
-                            "filter": True,
-                            "sortable": True,
-                        },
-                        {"headerName": "Status", "field": "status", "filter": True},
-                        {"headerName": "Przesyłki", "field": "shipments", "sortable": True},
-                        {"headerName": "Palety", "field": "pallets", "sortable": True},
-                        {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-                    ],
-                    "rowData": [],
-                    "defaultColDef": {"sortable": True, "resizable": True},
-                    "rowSelection": "multiple",
-                    "domLayout": "normal",
-                }
+        orders_host = ui.element("div").classes("cd-grid-host")
+        with orders_host:
+            grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            selection_column(multiple=True),
+                            {"headerName": "ID", "field": "id", "width": 70, "sortable": True},
+                            {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
+                            {"headerName": "Odbiorca", "field": "delivery_name", "filter": True},
+                            {"headerName": "Miasto", "field": "delivery_city", "filter": True},
+                            {
+                                "headerName": "Termin",
+                                "field": "delivery_date",
+                                "filter": True,
+                                "sortable": True,
+                            },
+                            {"headerName": "Status", "field": "status", "filter": True},
+                            {"headerName": "Przesyłki", "field": "shipments", "sortable": True},
+                            {"headerName": "Palety", "field": "pallets", "sortable": True},
+                            {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        ],
+                        "rowData": [],
+                        "defaultColDef": {"sortable": True, "resizable": True},
+                        "rowSelection": "multiple",
+                        "suppressRowClickSelection": True,
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 420px")
             )
-            .classes("w-full")
-            .style("height: 420px")
+        enlarge_orders_btn.on_click(
+            attach_grid_enlarge(
+                grid,
+                orders_host,
+                title="Zlecenia",
+                compact_height="420px",
+            )
         )
 
         async def sync_pallets_button() -> None:
@@ -329,16 +386,8 @@ async def orders_page() -> None:
                 f"(status „nowe”: {counts.new_status}, z wagą: {counts.new_with_weight})"
             )
             if counts.total == 0:
-                hint_label.set_text(
-                    "Brak zleceń — zaimportuj plik Excel, aby rozpocząć planowanie."
-                )
                 delete_all_btn.disable()
             else:
-                hint_label.set_text(
-                    "Import doda nowe zlecenia. Usuń zaznaczone w tabeli. "
-                    "Zmień palety: dostępne po zatwierdzeniu planu; "
-                    "zaznacz jedno zlecenie zatwierdzone."
-                )
                 delete_all_btn.enable()
             await sync_pallets_button()
 
@@ -480,202 +529,410 @@ async def plans_page() -> None:
     settings = get_settings()
     with page_frame("Plany"):
         ops_page_header(
-            "Plany",
-            "Generowanie i zatwierdzanie transportów całopojazdowych.",
+            "Plany FTL",
+            "FTL (full truckload) — transporty całopojazdowe. "
+            "System proponuje pełne auta z cross-docku. "
+            "Co nie weszło na trasę, traktuj jako towar zostający w magazynie — "
+            "możesz wrzucić do kolejki na Magazynie. "
+            f"Maks. {settings.max_drops_per_route} punktów rozładunku / trasę · "
+            f"{settings.cost_per_km:.2f} €/km. "
+            "Zatwierdzaj pojedyncze trasy — zajęty pojazd wypada z kolejnych generacji.",
         )
-        with ui.element("div").classes("cd-ops-hero w-full"):
-            ui.label("Plan transportów całopojazdowych").classes("font-bold")
-            ui.label(
-                "System proponuje pełne auta z cross-docku. "
-                "Co nie weszło na trasę, traktuj jako towar zostający w magazynie — "
-                "możesz wrzucić do kolejki na Magazynie. "
-                f"(Maks. {settings.max_drops_per_route} punktów rozładunku / trasę · "
-                f"{settings.cost_per_km:.2f} €/km — placeholder.)"
-            ).classes("text-sm text-gray-700")
 
         ctx = await run.io_bound(_load_planning_context)
         staying_ids: list[int] = []
 
+        def _plan_chip(caption: str, *, muted: bool = False) -> tuple[ui.element, ui.label]:
+            cls = "cd-plan-chip cd-plan-chip-muted" if muted else "cd-plan-chip"
+            wrap = ui.element("div").classes(cls)
+            with wrap:
+                if caption:
+                    ui.label(caption).classes("cd-plan-chip-k")
+                value = ui.label("—").classes("cd-plan-chip-v")
+            return wrap, value
+
+        with ui.element("div").classes("cd-plan-meta"):
+            _, chip_orders = _plan_chip("Zlecenia w bazie")
+            _, chip_eligible = _plan_chip("Do planowania")
+            _, chip_free = _plan_chip("Wolne pojazdy")
+            _, chip_busy = _plan_chip("Zajęte")
+            plan_wrap, chip_plan = _plan_chip("Plan")
+            empty_wrap, chip_empty = _plan_chip("", muted=True)
+            chip_empty.set_text("Brak planu — wygeneruj plan po imporcie zleceń.")
+            riding_wrap, chip_riding = _plan_chip("Jedzie")
+            staying_wrap, chip_staying = _plan_chip("Zostaje")
+            attention_wrap, chip_attention = _plan_chip("Wymaga uwagi")
+            km_wrap, chip_km = _plan_chip("Km")
+            cost_wrap, chip_cost = _plan_chip("Koszt")
+            plan_wrap.set_visibility(False)
+            riding_wrap.set_visibility(False)
+            staying_wrap.set_visibility(False)
+            attention_wrap.set_visibility(False)
+            km_wrap.set_visibility(False)
+            cost_wrap.set_visibility(False)
+
         with ui.element("div").classes("cd-ops-panel w-full"):
-            stats_label = ui.label("").classes("text-sm text-gray-700 font-medium")
-            summary_label = ui.label("").classes("text-sm text-gray-700")
-            blocker_label = ui.label("").classes("text-sm text-red-700")
             with ui.row().classes("cd-toolbar w-full"):
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
                 generate_btn = ui.button("Generuj plan", icon="auto_awesome").props("color=primary")
-                approve_btn = ui.button("Zatwierdź plan", icon="check_circle").props(
+                approve_btn = ui.button("Zatwierdź wszystkie trasy", icon="done_all").props(
                     "color=positive"
                 )
-                unlock_btn = ui.button("Odblokuj plan", icon="lock_open").props("outline")
+                approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
+                    "color=positive outline"
+                )
+                unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
+                unlock_btn = ui.button("Odblokuj cały plan", icon="restart_alt").props("outline")
                 delete_plan_btn = ui.button("Usuń plan", icon="delete").props(
                     "outline color=negative"
                 )
                 map_btn = ui.button("Pokaż na mapie", icon="map").props("outline")
-            hint_plan_label = ui.label(
-                "Po zatwierdzeniu generowanie jest zablokowane — użyj Odblokuj / Usuń."
-            ).classes("text-xs text-gray-500")
+            blocker_label = ui.label("").classes("text-sm text-red-700")
+            blocker_label.set_visibility(False)
             result_label = ui.label("").classes("text-sm text-gray-600")
+            result_label.set_visibility(False)
             warn_box = ui.column().classes("w-full gap-1")
 
-        ui.label("Trasy pojazdów (do zatwierdzenia)").classes("text-sm font-medium mt-2")
-        routes_grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
+        with ui.element("div").classes("cd-fleet-board w-full"):
+            with ui.element("div").classes("cd-fleet-col"):
+                ui.html(
+                    "<div class='cd-fleet-col-head'><h3>Flota</h3></div>",
+                    sanitize=False,
+                )
+                fleet_list = ui.column().classes("cd-fleet-list w-full gap-0")
+
+            with ui.element("div").classes("cd-routes-col"):
+                with ui.element("div").classes("cd-routes-col-head"):
+                    ui.html("<h3>Trasy</h3>", sanitize=False)
+                    enlarge_routes_btn = ui.button("Powiększ", icon="open_in_full").props(
+                        "flat dense no-caps"
+                    )
+                with (
+                    ui.element("div")
+                    .classes("p-3 w-full gap-2")
+                    .style("display:flex;flex-direction:column;gap:0.75rem;")
+                ):
+                    routes_host = ui.element("div").classes("cd-grid-host")
+                    with routes_host:
+                        routes_grid = (
+                            ui.aggrid(
+                                {
+                                    "columnDefs": [
+                                        selection_column(multiple=False),
+                                        {
+                                            "headerName": "ID poj.",
+                                            "field": "vehicle_id",
+                                            "width": 90,
+                                        },
+                                        {
+                                            "headerName": "Pojazd",
+                                            "field": "vehicle",
+                                            "filter": True,
+                                        },
+                                        {
+                                            "headerName": "Status",
+                                            "field": "route_status_pl",
+                                            "filter": True,
+                                        },
+                                        {
+                                            "headerName": "Punkty rozładunku",
+                                            "field": "drop_count",
+                                            "sortable": True,
+                                        },
+                                        {
+                                            "headerName": "Km",
+                                            "field": "distance_km",
+                                            "sortable": True,
+                                        },
+                                        {
+                                            "headerName": "Koszt €",
+                                            "field": "cost_eur",
+                                            "sortable": True,
+                                        },
+                                    ],
+                                    "rowData": [],
+                                    "rowSelection": "single",
+                                    "suppressRowClickSelection": True,
+                                    "defaultColDef": {"sortable": True, "resizable": True},
+                                    "domLayout": "normal",
+                                    "rowClassRules": {
+                                        "cd-row-approved": "data.route_status === 'approved'",
+                                        "cd-row-proposed": "data.route_status !== 'approved'",
+                                    },
+                                }
+                            )
+                            .classes("w-full")
+                            .style("height: 200px")
+                        )
+                    enlarge_routes_btn.on_click(
+                        attach_grid_enlarge(
+                            routes_grid,
+                            routes_host,
+                            title="Trasy",
+                            compact_height="200px",
+                        )
+                    )
+
+                    riding_cols = [
                         {"headerName": "Pojazd", "field": "vehicle", "filter": True},
                         {
-                            "headerName": "Punkty rozładunku",
-                            "field": "drop_count",
+                            "headerName": "Kolejność",
+                            "field": "sequence",
                             "sortable": True,
+                            "width": 110,
                         },
-                        {"headerName": "Km", "field": "distance_km", "sortable": True},
-                        {"headerName": "Koszt €", "field": "cost_eur", "sortable": True},
-                    ],
-                    "rowData": [],
-                    "defaultColDef": {"sortable": True, "resizable": True},
-                    "domLayout": "normal",
-                }
-            )
-            .classes("w-full")
-            .style("height: 160px")
-        )
+                        {"headerName": "Punkt rozładunku", "field": "drop_key", "filter": True},
+                        {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
+                        {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
+                        {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        {"headerName": "Zapełnienie", "field": "fill_pct"},
+                    ]
+                    stay_cols = [
+                        {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
+                        {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
+                        {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        {"headerName": "Powód", "field": "reason", "flex": 1},
+                    ]
 
-        riding_cols = [
-            {"headerName": "Pojazd", "field": "vehicle", "filter": True},
-            {"headerName": "Kolejność", "field": "sequence", "sortable": True, "width": 110},
-            {"headerName": "Punkt rozładunku", "field": "drop_key", "filter": True},
-            {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
-            {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
-            {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-            {"headerName": "Zapełnienie", "field": "fill_pct"},
-        ]
-        stay_cols = [
-            {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
-            {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
-            {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-            {"headerName": "Powód", "field": "reason", "flex": 1},
-        ]
-
-        with ui.tabs().classes("w-full") as tabs:
-            tab_riding = ui.tab("Jedzie")
-            tab_staying = ui.tab("Zostaje w magazynie")
-            tab_attention = ui.tab("Wymaga uwagi")
-        with ui.tab_panels(tabs, value=tab_riding).classes("w-full"):
-            with ui.tab_panel(tab_riding):
-                riding_grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": riding_cols,
-                            "rowData": [],
-                            "defaultColDef": {"sortable": True, "resizable": True},
-                            "domLayout": "normal",
-                        }
-                    )
-                    .classes("w-full")
-                    .style("height: 300px")
-                )
-            with ui.tab_panel(tab_staying):
-                ui.label("Zlecenia bez miejsca w flocie — towar zostaje w hubie.").classes(
-                    "text-sm text-gray-600 mb-1"
-                )
-                with ui.row().classes("cd-toolbar w-full mb-1"):
-                    enqueue_staying_btn = ui.button(
-                        "Dodaj zostające do kolejki magazynowej",
-                        icon="playlist_add",
-                    ).props("color=primary")
-                    staying_empty = ui.label("Brak zleceń w tej kategorii.").classes(
-                        "text-sm text-gray-500"
-                    )
-                staying_grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": stay_cols,
-                            "rowData": [],
-                            "defaultColDef": {"sortable": True, "resizable": True},
-                            "domLayout": "normal",
-                        }
-                    )
-                    .classes("w-full")
-                    .style("height: 260px")
-                )
-            with ui.tab_panel(tab_attention):
-                ui.label(
-                    "Brak trasy: uzupełnij współrzędne w Ustawieniach, "
-                    "zmniejsz liczbę punktów rozładunku albo wygeneruj plan ponownie."
-                ).classes("text-sm text-gray-600 mb-1")
-                attention_empty = ui.label("Brak zleceń w tej kategorii.").classes(
-                    "text-sm text-gray-500"
-                )
-                attention_grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": stay_cols,
-                            "rowData": [],
-                            "defaultColDef": {"sortable": True, "resizable": True},
-                            "domLayout": "normal",
-                        }
-                    )
-                    .classes("w-full")
-                    .style("height: 260px")
-                )
+                    with ui.tabs().classes("w-full") as tabs:
+                        tab_riding = ui.tab("Jedzie")
+                        tab_staying = ui.tab("Zostaje w magazynie")
+                        tab_attention = ui.tab("Wymaga uwagi")
+                    with ui.tab_panels(tabs, value=tab_riding).classes("w-full"):
+                        with ui.tab_panel(tab_riding):
+                            with ui.row().classes("cd-tab-tools"):
+                                info_hint("Zlecenia przypisane do tras — jadą w tym planie.")
+                                enlarge_riding_btn = ui.button(
+                                    "Powiększ", icon="open_in_full"
+                                ).props("flat dense no-caps")
+                            riding_host = ui.element("div").classes("cd-grid-host")
+                            with riding_host:
+                                riding_grid = (
+                                    ui.aggrid(
+                                        {
+                                            "columnDefs": riding_cols,
+                                            "rowData": [],
+                                            "defaultColDef": {
+                                                "sortable": True,
+                                                "resizable": True,
+                                            },
+                                            "domLayout": "normal",
+                                        }
+                                    )
+                                    .classes("w-full")
+                                    .style("height: 300px")
+                                )
+                            enlarge_riding_btn.on_click(
+                                attach_grid_enlarge(
+                                    riding_grid,
+                                    riding_host,
+                                    title="Jedzie",
+                                    compact_height="300px",
+                                )
+                            )
+                        with ui.tab_panel(tab_staying):
+                            with ui.row().classes("cd-tab-tools"):
+                                info_hint("Zlecenia bez miejsca w flocie — towar zostaje w hubie.")
+                                enlarge_staying_btn = ui.button(
+                                    "Powiększ", icon="open_in_full"
+                                ).props("flat dense no-caps")
+                            with ui.row().classes("cd-toolbar w-full mb-1"):
+                                enqueue_staying_btn = ui.button(
+                                    "Dodaj zostające do kolejki magazynowej",
+                                    icon="playlist_add",
+                                ).props("color=primary")
+                                staying_empty = ui.label("Brak zleceń w tej kategorii.").classes(
+                                    "text-sm text-gray-500"
+                                )
+                            staying_host = ui.element("div").classes("cd-grid-host")
+                            with staying_host:
+                                staying_grid = (
+                                    ui.aggrid(
+                                        {
+                                            "columnDefs": stay_cols,
+                                            "rowData": [],
+                                            "defaultColDef": {
+                                                "sortable": True,
+                                                "resizable": True,
+                                            },
+                                            "domLayout": "normal",
+                                        }
+                                    )
+                                    .classes("w-full")
+                                    .style("height: 260px")
+                                )
+                            enlarge_staying_btn.on_click(
+                                attach_grid_enlarge(
+                                    staying_grid,
+                                    staying_host,
+                                    title="Zostaje w magazynie",
+                                    compact_height="260px",
+                                )
+                            )
+                        with ui.tab_panel(tab_attention):
+                            with ui.row().classes("cd-tab-tools"):
+                                info_hint(
+                                    "Brak trasy: uzupełnij współrzędne w Ustawieniach, "
+                                    "zmniejsz liczbę punktów rozładunku albo wygeneruj "
+                                    "plan ponownie."
+                                )
+                                enlarge_attention_btn = ui.button(
+                                    "Powiększ", icon="open_in_full"
+                                ).props("flat dense no-caps")
+                            attention_empty = ui.label("Brak zleceń w tej kategorii.").classes(
+                                "text-sm text-gray-500"
+                            )
+                            attention_host = ui.element("div").classes("cd-grid-host")
+                            with attention_host:
+                                attention_grid = (
+                                    ui.aggrid(
+                                        {
+                                            "columnDefs": stay_cols,
+                                            "rowData": [],
+                                            "defaultColDef": {
+                                                "sortable": True,
+                                                "resizable": True,
+                                            },
+                                            "domLayout": "normal",
+                                        }
+                                    )
+                                    .classes("w-full")
+                                    .style("height: 260px")
+                                )
+                            enlarge_attention_btn.on_click(
+                                attach_grid_enlarge(
+                                    attention_grid,
+                                    attention_host,
+                                    title="Wymaga uwagi",
+                                    compact_height="260px",
+                                )
+                            )
 
         async def sync_planning_state(ctx_now: dict[str, object], result_text: str = "") -> None:
-            stats_label.set_text(
-                f"W bazie: {ctx_now['total_orders']} zleceń | "
-                f"do planowania (nowe + waga): {ctx_now['eligible_orders']} | "
-                f"aktywne pojazdy: {ctx_now['active_vehicles']}"
-            )
+            fleet_list.clear()
+            with fleet_list:
+                rows = list(ctx_now.get("fleet_rows") or [])
+                if not rows:
+                    ui.label("Brak aktywnych pojazdów.").classes("text-sm text-gray-500 p-3")
+                for row in rows:
+                    busy = bool(row.get("is_busy"))
+                    row_cls = (
+                        "cd-fleet-row cd-fleet-row-busy"
+                        if busy
+                        else "cd-fleet-row cd-fleet-row-free"
+                    )
+                    badge_cls = "cd-badge-busy" if busy else "cd-badge-free"
+                    badge_txt = "zajęty" if busy else "wolny"
+                    with ui.element("div").classes(row_cls):
+                        with ui.column().classes("gap-0"):
+                            ui.label(str(row.get("code", ""))).classes(
+                                "text-sm font-semibold"
+                            ).style("color: var(--cd-heading)")
+                            ui.label(str(row.get("vehicle_type", ""))).classes(
+                                "text-xs text-gray-500"
+                            )
+                        ui.html(
+                            f"<span class='{badge_cls}'>{badge_txt}</span>",
+                            sanitize=False,
+                        )
+            chip_orders.set_text(str(ctx_now["total_orders"]))
+            chip_eligible.set_text(str(ctx_now["eligible_orders"]))
+            chip_free.set_text(str(ctx_now["available_vehicles"]))
+            chip_busy.set_text(str(ctx_now["busy_vehicles"]))
+            run_id = ctx_now.get("latest_run_id")
+            if run_id is None:
+                plan_wrap.set_visibility(False)
+                empty_wrap.set_visibility(True)
+                riding_wrap.set_visibility(False)
+                staying_wrap.set_visibility(False)
+                attention_wrap.set_visibility(False)
+                km_wrap.set_visibility(False)
+                cost_wrap.set_visibility(False)
+            else:
+                empty_wrap.set_visibility(False)
+                plan_wrap.set_visibility(True)
+                chip_plan.set_text(
+                    f"#{run_id} · {plan_status_pl(str(ctx_now.get('plan_status') or ''))}"
+                )
             plan_status = ctx_now.get("plan_status")
             blockers: list[str] = []
             can_generate = True
             if int(ctx_now["eligible_orders"]) == 0:  # type: ignore[arg-type]
                 blockers.append("brak zleceń „nowe” z wagą — wgraj Excel na Zleceniach")
                 can_generate = False
-            if int(ctx_now["active_vehicles"]) == 0:  # type: ignore[arg-type]
-                blockers.append("brak aktywnych pojazdów — dodaj flotę w Ustawieniach")
-                can_generate = False
-            if plan_status == "approved":
-                blockers.append("najnowszy plan jest zatwierdzony — użyj Odblokuj lub Usuń")
+            if int(ctx_now["available_vehicles"]) == 0:  # type: ignore[arg-type]
+                blockers.append("brak wolnych pojazdów — odblokuj trasę lub dodaj flotę")
                 can_generate = False
             if blockers and not can_generate:
                 blocker_label.set_text("Nie można generować: " + "; ".join(blockers) + ".")
+                blocker_label.set_visibility(True)
                 generate_btn.disable()
             else:
                 blocker_label.set_text("")
+                blocker_label.set_visibility(False)
                 generate_btn.enable()
-            if plan_status == "draft" and ctx_now.get("latest_run_id") is not None:
+            has_run = ctx_now.get("latest_run_id") is not None
+            if has_run and plan_status in {"draft", "partial"}:
                 approve_btn.enable()
+                approve_route_btn.enable()
             else:
                 approve_btn.disable()
-            if plan_status == "approved" and ctx_now.get("latest_run_id") is not None:
+                approve_route_btn.disable()
+            if has_run:
+                unlock_route_btn.enable()
                 unlock_btn.enable()
-            else:
-                unlock_btn.disable()
-            if ctx_now.get("latest_run_id") is not None:
                 delete_plan_btn.enable()
                 map_btn.enable()
             else:
+                unlock_route_btn.disable()
+                unlock_btn.disable()
                 delete_plan_btn.disable()
                 map_btn.disable()
-            hint_plan_label.set_visibility(plan_status == "approved")
             if result_text:
                 result_label.set_text(result_text)
+                result_label.set_visibility(True)
 
         async def refresh_plan_view() -> None:
             nonlocal ctx, staying_ids
             ctx = await run.io_bound(_load_planning_context)
             view = await run.io_bound(_load_latest_plan_view)
             if view.summary is None:
-                summary_label.set_text("Brak planu — wygeneruj plan po imporcie zleceń.")
                 staying_ids = []
                 enqueue_staying_btn.disable()
+                empty_wrap.set_visibility(True)
+                plan_wrap.set_visibility(False)
+                riding_wrap.set_visibility(False)
+                staying_wrap.set_visibility(False)
+                attention_wrap.set_visibility(False)
+                km_wrap.set_visibility(False)
+                cost_wrap.set_visibility(False)
             else:
-                summary_label.set_text(view.summary.to_polish())
                 staying_ids = list(view.staying_order_ids)
                 if staying_ids:
                     enqueue_staying_btn.enable()
                 else:
                     enqueue_staying_btn.disable()
+                empty_wrap.set_visibility(False)
+                plan_wrap.set_visibility(True)
+                chip_plan.set_text(
+                    f"#{view.summary.run_id} · {plan_status_pl(view.summary.plan_status)}"
+                )
+                riding_wrap.set_visibility(True)
+                staying_wrap.set_visibility(True)
+                attention_wrap.set_visibility(True)
+                chip_riding.set_text(str(view.summary.riding))
+                chip_staying.set_text(str(view.summary.staying))
+                chip_attention.set_text(str(view.summary.attention))
+                if view.summary.total_distance_km is not None:
+                    km_wrap.set_visibility(True)
+                    chip_km.set_text(f"{view.summary.total_distance_km:.0f}")
+                else:
+                    km_wrap.set_visibility(False)
+                if view.summary.total_cost_eur is not None:
+                    cost_wrap.set_visibility(True)
+                    chip_cost.set_text(f"{view.summary.total_cost_eur:.0f} €")
+                else:
+                    cost_wrap.set_visibility(False)
             routes_grid.options["rowData"] = view.routes
             routes_grid.update()
             riding_grid.options["rowData"] = view.riding
@@ -708,17 +965,17 @@ async def plans_page() -> None:
             ctx_now = await run.io_bound(_load_planning_context)
             if (
                 int(ctx_now["eligible_orders"]) == 0  # type: ignore[arg-type]
-                or int(ctx_now["active_vehicles"]) == 0  # type: ignore[arg-type]
-                or ctx_now.get("plan_status") == "approved"
+                or int(ctx_now["available_vehicles"]) == 0  # type: ignore[arg-type]
             ):
                 await sync_planning_state(ctx_now)
                 ui.notify(
-                    "Brak danych lub plan zatwierdzony — nie można generować.",
+                    "Brak zleceń w puli lub wolnych pojazdów — nie można generować.",
                     type="warning",
                 )
                 return
             warn_box.clear()
             result_label.set_text("Trwa optymalizacja planu…")
+            result_label.set_visibility(True)
             generate_btn.disable()
             approve_btn.disable()
             try:
@@ -739,6 +996,7 @@ async def plans_page() -> None:
                 f"Plan #{run_id} · jedzie={planned} · "
                 f"zostaje={unassigned} · wymaga uwagi={unrouted}"
             )
+            result_label.set_visibility(True)
             with warn_box:
                 for msg in warnings[:30]:
                     ui.label(msg).classes("text-sm text-amber-800")
@@ -747,11 +1005,62 @@ async def plans_page() -> None:
                 type="positive" if unassigned == 0 and unrouted == 0 else "warning",
             )
 
+        async def _selected_route_vehicle_id() -> int | None:
+            rows = await routes_grid.get_selected_rows()
+            if not rows:
+                return None
+            vid = rows[0].get("vehicle_id")
+            return int(vid) if vid is not None else None
+
+        async def on_approve_route() -> None:
+            run_id = ctx.get("latest_run_id")
+            if run_id is None:
+                ui.notify("Brak planu.", type="warning")
+                return
+            vehicle_id = await _selected_route_vehicle_id()
+            if vehicle_id is None:
+                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+                return
+            try:
+                rid, n_orders, code = await run.io_bound(
+                    _approve_route_job, int(run_id), vehicle_id, username
+                )
+            except Exception as exc:
+                ui.notify(f"Nie udało się zatwierdzić trasy: {exc}", type="negative")
+                return
+            ui.notify(
+                f"Zatwierdzono trasę {code} (plan #{rid}, {n_orders} zlecen).",
+                type="positive",
+            )
+            await refresh_plan_view()
+
+        async def on_unlock_route() -> None:
+            run_id = ctx.get("latest_run_id")
+            if run_id is None:
+                ui.notify("Brak planu.", type="warning")
+                return
+            vehicle_id = await _selected_route_vehicle_id()
+            if vehicle_id is None:
+                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+                return
+            try:
+                rid, n_orders, code = await run.io_bound(
+                    _unlock_route_job, int(run_id), vehicle_id, username
+                )
+            except Exception as exc:
+                ui.notify(f"Nie udało się odblokować trasy: {exc}", type="negative")
+                return
+            ui.notify(
+                f"Odblokowano trasę {code} (plan #{rid}, {n_orders} zleceń wróciło do puli).",
+                type="info",
+            )
+            await refresh_plan_view()
+
         async def on_approve() -> None:
             ctx_now = await run.io_bound(_load_planning_context)
             run_id = ctx_now.get("latest_run_id")
-            if run_id is None or ctx_now.get("plan_status") != "draft":
-                ui.notify("Brak planu roboczego do zatwierdzenia.", type="warning")
+            if run_id is None or ctx_now.get("plan_status") not in {"draft", "partial"}:
+                ui.notify("Brak propozycji tras do zatwierdzenia.", type="warning")
                 return
             try:
                 approved_run, count = await run.io_bound(
@@ -765,15 +1074,15 @@ async def plans_page() -> None:
                 return
             await refresh_plan_view()
             ui.notify(
-                f"Zatwierdzono plan #{approved_run}: {count} zleceń.",
+                f"Zatwierdzono wszystkie trasy w planie #{approved_run}: {count} zleceń.",
                 type="positive",
             )
 
         async def on_unlock() -> None:
             ctx_now = await run.io_bound(_load_planning_context)
             run_id = ctx_now.get("latest_run_id")
-            if run_id is None or ctx_now.get("plan_status") != "approved":
-                ui.notify("Odblokować można tylko zatwierdzony plan.", type="warning")
+            if run_id is None or ctx_now.get("plan_status") not in {"approved", "partial"}:
+                ui.notify("Odblokować można plan częściowy lub zatwierdzony.", type="warning")
                 return
             try:
                 unlocked_run, count = await run.io_bound(
@@ -836,6 +1145,8 @@ async def plans_page() -> None:
         refresh_btn.on_click(refresh_plan_view)
         generate_btn.on_click(on_generate)
         approve_btn.on_click(on_approve)
+        approve_route_btn.on_click(on_approve_route)
+        unlock_route_btn.on_click(on_unlock_route)
         unlock_btn.on_click(on_unlock)
         delete_plan_btn.on_click(on_delete_plan)
         map_btn.on_click(on_show_map)
@@ -856,7 +1167,8 @@ async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
         ops_page_header(
             "Mapa",
-            "Trasy planu (haversine). Strzałki = kierunek jazdy od magazynu.",
+            "Trasy ostatniego planu. Linie łączą magazyn z punktami rozładunku; "
+            "strzałki pokazują kierunek jazdy.",
         )
         view = await run.io_bound(_load_map_view, run_id)
         if view is None:
@@ -873,22 +1185,25 @@ async def map_page(run_id: int | None = None) -> None:
                 f"Plan #{view.run_id} · {plan_status_pl(view.plan_status)} · "
                 f"pojazdów na mapie: {len(view.routes)}"
             ).classes("font-medium")
-            ui.label("Linie proste (haversine). Strzałki = kierunek jazdy od magazynu.").classes(
-                "text-xs text-gray-500"
-            )
 
         with ui.row().classes("w-full gap-4 items-start flex-wrap"):
-            with ui.column().classes("gap-2 min-w-[200px]"):
-                ui.label("Legenda").classes("font-medium")
+            with (
+                ui.element("div")
+                .classes("cd-ops-panel")
+                .style("min-width:200px;flex:0 0 auto;padding:0.75rem 1rem;")
+            ):
+                ui.label("Legenda").classes("font-medium").style("color: var(--cd-heading)")
                 for route in view.routes:
                     km = f"{route.distance_km:.1f} km" if route.distance_km is not None else "?"
+                    status_pl = route_status_pl(route.route_status)
                     with ui.row().classes("items-center gap-2"):
                         ui.element("div").style(
                             f"width:14px;height:14px;border-radius:2px;background:{route.color};"
+                            + ("opacity:0.45;" if route.route_status != "approved" else "")
                         )
-                        ui.label(f"{route.vehicle_code} · {len(route.markers)} pkt · {km}").classes(
-                            "text-sm"
-                        )
+                        ui.label(
+                            f"{route.vehicle_code} · {status_pl} · {len(route.markers)} pkt · {km}"
+                        ).classes("text-sm").style("color: var(--cd-body)")
 
             m = (
                 ui.leaflet(center=view.center, zoom=view.zoom)
@@ -902,11 +1217,17 @@ async def map_page(run_id: int | None = None) -> None:
             route_markers: list[tuple[object, str]] = []
             arrows: list[dict[str, float | str]] = []
             for route in view.routes:
+                approved = route.route_status == "approved"
                 m.generic_layer(
                     name="polyline",
                     args=[
                         list(route.polyline),
-                        {"color": route.color, "weight": 4, "opacity": 0.85},
+                        {
+                            "color": route.color,
+                            "weight": 5 if approved else 3,
+                            "opacity": 0.9 if approved else 0.45,
+                            "dashArray": None if approved else "8 8",
+                        },
                     ],
                 )
                 arrows.extend(segment_arrows(route.polyline, color=route.color))
@@ -967,33 +1288,33 @@ async def reports_page() -> None:
     with page_frame("Raporty"):
         ops_page_header(
             "Raporty",
-            "Zapełnienie i oszczędności względem scenariusza 1 zlecenie = 1 pojazd.",
+            "Zapełnienie wagowe pojazdów oraz oszczędności względem "
+            "scenariusza 1 zlecenie = 1 pojazd. Stawka za km z ustawień.",
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Efektywność planu").classes("font-bold")
-            ui.label(
-                "Zapełnienie wagowe pojazdów oraz oszczędności względem "
-                "scenariusza 1 zlecenie = 1 pojazd. Stawka za km z ustawień."
-            ).classes("text-sm text-gray-700")
 
         summary = ui.label("").classes("text-sm")
-        util_grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
-                        {"headerName": "Pojazd", "field": "vehicle"},
-                        {"headerName": "Punkty rozładunku", "field": "drops"},
-                        {"headerName": "Zapełnienie %", "field": "fill"},
-                        {"headerName": "Km", "field": "km"},
-                        {"headerName": "Koszt €", "field": "cost"},
-                    ],
-                    "rowData": [],
-                    "domLayout": "normal",
-                }
+        reports_host = ui.element("div").classes("cd-grid-host")
+        with reports_host:
+            util_grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            {"headerName": "Pojazd", "field": "vehicle"},
+                            {"headerName": "Status", "field": "route_status_pl"},
+                            {"headerName": "Punkty rozładunku", "field": "drops"},
+                            {"headerName": "Zapełnienie %", "field": "fill"},
+                            {"headerName": "Km", "field": "km"},
+                            {"headerName": "Koszt €", "field": "cost"},
+                        ],
+                        "rowData": [],
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 280px")
             )
-            .classes("w-full")
-            .style("height: 280px")
-        )
 
         async def refresh_report() -> None:
             bundle = await run.io_bound(_load_report)
@@ -1010,6 +1331,7 @@ async def reports_page() -> None:
             util_grid.options["rowData"] = [
                 {
                     "vehicle": r.vehicle_code,
+                    "route_status_pl": route_status_pl(r.route_status),
                     "drops": r.drop_count,
                     "fill": (round(r.fill_ratio * 100, 1) if r.fill_ratio is not None else "?"),
                     "km": round(r.distance_km, 1),
@@ -1029,6 +1351,12 @@ async def reports_page() -> None:
         with ui.row().classes("cd-toolbar"):
             ui.button("Odśwież", on_click=refresh_report).props("outline")
             ui.button("Pobierz Excel", icon="download", on_click=on_download).props("color=primary")
+            enlarge_grid_button(
+                util_grid,
+                reports_host,
+                title="Raport",
+                compact_height="280px",
+            )
         await refresh_report()
 
 
@@ -1051,32 +1379,45 @@ async def warehouse_page() -> None:
     with page_frame("Magazyn"):
         ops_page_header(
             "Magazyn",
-            "Kolejka priorytetowa wydań i propozycja buforowania kosztowego.",
+            "Kolejka priorytetowa wydań i propozycja buforowania kosztowego. "
+            "Ręczny priorytet wydań (całe zlecenia).",
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Kolejka magazynowa").classes("font-bold")
-            ui.label(
-                "Ręczny priorytet wydań (całe zlecenia). "
-                "Poniżej: propozycja buforowania kosztowego."
-            ).classes("text-sm text-gray-700")
 
-        ui.label("Dostępne zlecenia (nowe)").classes("text-sm font-medium")
-        candidates_grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
-                        {"headerName": "ID", "field": "order_id", "width": 80},
-                        {"headerName": "Kod", "field": "delivery_code", "filter": True},
-                        {"headerName": "Miasto", "field": "city", "filter": True},
-                        {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-                    ],
-                    "rowData": [],
-                    "rowSelection": "multiple",
-                    "domLayout": "normal",
-                }
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Dostępne zlecenia (nowe)").classes("text-sm font-medium")
+            enlarge_candidates_btn = ui.button("Powiększ", icon="open_in_full").props(
+                "flat dense no-caps"
             )
-            .classes("w-full")
-            .style("height: 200px")
+        candidates_host = ui.element("div").classes("cd-grid-host")
+        with candidates_host:
+            candidates_grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            selection_column(multiple=True),
+                            {"headerName": "ID", "field": "order_id", "width": 80},
+                            {"headerName": "Kod", "field": "delivery_code", "filter": True},
+                            {"headerName": "Miasto", "field": "city", "filter": True},
+                            {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        ],
+                        "rowData": [],
+                        "rowSelection": "multiple",
+                        "suppressRowClickSelection": True,
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 200px")
+            )
+        enlarge_candidates_btn.on_click(
+            attach_grid_enlarge(
+                candidates_grid,
+                candidates_host,
+                title="Dostępne zlecenia",
+                compact_height="200px",
+            )
         )
         with ui.row().classes("cd-toolbar"):
             enqueue_btn = ui.button("Dodaj do kolejki", icon="playlist_add").props("color=primary")
@@ -1084,25 +1425,41 @@ async def warehouse_page() -> None:
                 "text-sm text-gray-500"
             )
 
-        ui.label("Kolejka").classes("text-sm font-medium mt-2")
-        grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
-                        {"headerName": "Poz.", "field": "position", "width": 70},
-                        {"headerName": "Kod", "field": "delivery_code", "filter": True},
-                        {"headerName": "Miasto", "field": "city"},
-                        {"headerName": "Waga [kg]", "field": "weight_kg"},
-                        {"headerName": "Status", "field": "status"},
-                        {"headerName": "ID", "field": "order_id", "width": 80},
-                    ],
-                    "rowData": [],
-                    "rowSelection": "single",
-                    "domLayout": "normal",
-                }
+        with ui.row().classes("w-full items-center justify-between mt-2"):
+            ui.label("Kolejka").classes("text-sm font-medium")
+            enlarge_queue_btn = ui.button("Powiększ", icon="open_in_full").props(
+                "flat dense no-caps"
             )
-            .classes("w-full")
-            .style("height: 240px")
+        queue_host = ui.element("div").classes("cd-grid-host")
+        with queue_host:
+            grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            selection_column(multiple=False),
+                            {"headerName": "Poz.", "field": "position", "width": 70},
+                            {"headerName": "Kod", "field": "delivery_code", "filter": True},
+                            {"headerName": "Miasto", "field": "city"},
+                            {"headerName": "Waga [kg]", "field": "weight_kg"},
+                            {"headerName": "Status", "field": "status"},
+                            {"headerName": "ID", "field": "order_id", "width": 80},
+                        ],
+                        "rowData": [],
+                        "rowSelection": "single",
+                        "suppressRowClickSelection": True,
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 240px")
+            )
+        enlarge_queue_btn.on_click(
+            attach_grid_enlarge(
+                grid,
+                queue_host,
+                title="Kolejka",
+                compact_height="240px",
+            )
         )
         queue_empty = ui.label(
             "Brak pozycji — dodaj zlecenie z listy powyżej lub z Planów."
@@ -1200,26 +1557,42 @@ async def warehouse_page() -> None:
             ui.notify("Usunięto z kolejki.", type="positive")
             await refresh_all()
 
-        ui.label("Propozycja buforowania").classes("text-sm font-medium mt-3")
+        with ui.row().classes("w-full items-center justify-between mt-3"):
+            ui.label("Propozycja buforowania").classes("text-sm font-medium")
+            enlarge_buffer_btn = ui.button("Powiększ", icon="open_in_full").props(
+                "flat dense no-caps"
+            )
         buffer_summary = ui.label("").classes("text-sm text-gray-700")
         buffer_decisions: dict[int, object] = {}
-        buffer_grid = (
-            ui.aggrid(
-                {
-                    "columnDefs": [
-                        {"headerName": "Kod", "field": "delivery_code"},
-                        {"headerName": "ID", "field": "order_id", "width": 80},
-                        {"headerName": "Decyzja", "field": "action"},
-                        {"headerName": "Dni", "field": "buffer_days"},
-                        {"headerName": "Oszczędność %", "field": "savings_pct"},
-                    ],
-                    "rowData": [],
-                    "rowSelection": "multiple",
-                    "domLayout": "normal",
-                }
+        buffer_host = ui.element("div").classes("cd-grid-host")
+        with buffer_host:
+            buffer_grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            selection_column(multiple=True),
+                            {"headerName": "Kod", "field": "delivery_code"},
+                            {"headerName": "ID", "field": "order_id", "width": 80},
+                            {"headerName": "Decyzja", "field": "action"},
+                            {"headerName": "Dni", "field": "buffer_days"},
+                            {"headerName": "Oszczędność %", "field": "savings_pct"},
+                        ],
+                        "rowData": [],
+                        "rowSelection": "multiple",
+                        "suppressRowClickSelection": True,
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 220px")
             )
-            .classes("w-full")
-            .style("height: 220px")
+        enlarge_buffer_btn.on_click(
+            attach_grid_enlarge(
+                buffer_grid,
+                buffer_host,
+                title="Propozycja buforowania",
+                compact_height="220px",
+            )
         )
 
         async def refresh_buffer() -> None:
@@ -1342,9 +1715,6 @@ async def system_page() -> None:
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Stan systemu").classes("font-bold")
-            ui.label("Podgląd bazy, planu, dysku, kopii zapasowej i ogona logów.").classes(
-                "text-sm text-gray-700"
-            )
         status_box = ui.column().classes("w-full gap-2")
         log_box = ui.column().classes("w-full gap-1 font-mono text-xs")
 
@@ -1416,9 +1786,45 @@ def _vehicles_to_rows(vehicles: list[Vehicle]) -> list[dict[str, object]]:
             "weight_capacity_kg": v.weight_capacity_kg,
             "is_active": "tak" if v.is_active else "nie",
             "is_placeholder": "tak" if v.is_placeholder else "nie",
+            "is_busy": "tak" if v.is_busy else "nie",
         }
         for v in vehicles
     ]
+
+
+def _load_fleet_type_overview() -> list[dict[str, object]]:
+    from crossdock.services.fleet import fleet_type_counts, fleet_type_specs
+
+    with session_scope() as session:
+        counts = fleet_type_counts(session)
+    rows: list[dict[str, object]] = []
+    for spec in fleet_type_specs():
+        vtype = str(spec["vehicle_type"])
+        c = counts.get(vtype, {"active": 0, "busy": 0, "total": 0})
+        rows.append(
+            {
+                **spec,
+                "active_count": c["active"],
+                "busy_count": c["busy"],
+                "target_count": c["active"],
+            }
+        )
+    return rows
+
+
+def _sync_fleet_type_job(
+    vehicle_type: str, target_count: int, username: str
+) -> tuple[int, int, int, int]:
+    from crossdock.services.fleet import sync_fleet_units
+
+    with session_scope() as session:
+        result = sync_fleet_units(
+            session,
+            vehicle_type=VehicleType(vehicle_type),
+            target_count=target_count,
+            username=username,
+        )
+    return result.created, result.activated, result.deactivated, result.skipped_busy
 
 
 def _load_vehicles() -> list[Vehicle]:
@@ -1512,12 +1918,12 @@ def _save_params_job(updates: dict, username: str):
 
 
 PARAM_LABELS_PL = {
-    "depot_latitude": "Szerokość magazynu (lat)",
-    "depot_longitude": "Długość magazynu (lon)",
+    "depot_latitude": "Szerokość geograficzna magazynu",
+    "depot_longitude": "Długość geograficzna magazynu",
     "min_fill_ratio": "Min. zapełnienie (0-1)",
     "max_drops_per_route": "Maks. punktów rozładunku",
-    "solver_time_limit_s": "Limit czasu solvera [s]",
-    "solver_seed": "Ziarno solvera",
+    "solver_time_limit_s": "Limit czasu planowania [s]",
+    "solver_seed": "Ziarno losowości (powtarzalność planów)",
     "default_delivery_days": "Domyślny termin dostawy [dni]",
     "cost_per_km": "Stawka €/km",
     "storage_cost_per_pallet_day": "Koszt magazynu €/paleta/dzień",
@@ -1537,7 +1943,7 @@ async def settings_page() -> None:
     with page_frame("Ustawienia"):
         ops_page_header(
             "Ustawienia",
-            "Flota, lokalizacje i parametry biznesowe (bez sekretów / host / port).",
+            "Flota, lokalizacje i parametry biznesowe.",
         )
         with ui.tabs().classes("w-full") as tabs:
             tab_fleet = ui.tab("Flota")
@@ -1547,32 +1953,94 @@ async def settings_page() -> None:
             with ui.tab_panel(tab_fleet):
                 with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Flota pojazdów").classes("font-bold")
+                    ui.label(
+                        "Ustaw liczbę aktywnych pojazdów według typu (bus, ciężarówka, plandeka). "
+                        "Pojemności i kg/paleta pochodzą ze słownika floty. "
+                        "Pojazdy z zatwierdzoną trasą nie są dezaktywowane."
+                    ).classes("text-sm text-gray-700")
+
+                type_overview = await run.io_bound(_load_fleet_type_overview)
+                type_inputs: dict[str, object] = {}
+                with ui.row().classes("w-full gap-4 flex-wrap mb-2"):
+                    for row in type_overview:
+                        vtype = str(row["vehicle_type"])
+                        with (
+                            ui.column().classes("cd-ops-panel gap-1 p-3").style("min-width: 220px")
+                        ):
+                            ui.label(vtype.upper()).classes("font-bold")
+                            ui.label(
+                                f"Palety: {row['pallet_capacity']} · "
+                                f"Kg: {row['weight_capacity_kg']} · "
+                                f"kg/paleta: {row['kg_per_pallet']}"
+                            ).classes("text-xs text-gray-600")
+                            ui.label(
+                                f"Aktywne: {row['active_count']} · Zajęte: {row['busy_count']}"
+                            ).classes("text-xs")
+                            type_inputs[vtype] = ui.number(
+                                "Liczba aktywnych",
+                                value=int(row["active_count"]),
+                                min=0,
+                                precision=0,
+                            ).classes("w-40")
+
+                async def on_sync_type_counts() -> None:
+                    messages: list[str] = []
+                    for vtype, number_in in type_inputs.items():
+                        target = int(number_in.value or 0)  # type: ignore[union-attr]
+                        created, activated, deactivated, skipped = await run.io_bound(
+                            _sync_fleet_type_job, vtype, target, username
+                        )
+                        messages.append(
+                            f"{vtype}: +{created}/reakt.{activated}/-{deactivated}"
+                            + (f" (pominięto zajęte: {skipped})" if skipped else "")
+                        )
+                    ui.notify(" · ".join(messages), type="positive")
+                    await refresh_vehicles()
+                    # refresh type labels by full page reload of overview numbers
+                    refreshed = await run.io_bound(_load_fleet_type_overview)
+                    for row in refreshed:
+                        vtype = str(row["vehicle_type"])
+                        if vtype in type_inputs:
+                            type_inputs[vtype].value = int(row["active_count"])  # type: ignore[union-attr]
+
+                with ui.row().classes("cd-toolbar mb-2"):
+                    ui.button(
+                        "Zastosuj liczby pojazdów",
+                        icon="sync",
+                        on_click=on_sync_type_counts,
+                    ).props("color=primary")
+
                 vehicles = await run.io_bound(_load_vehicles)
-                grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": [
-                                {"headerName": "ID", "field": "id", "width": 70},
-                                {"headerName": "Kod", "field": "code"},
-                                {"headerName": "Typ", "field": "vehicle_type"},
-                                {"headerName": "Palety", "field": "pallet_capacity"},
-                                {"headerName": "Kg", "field": "weight_capacity_kg"},
-                                {"headerName": "Aktywny", "field": "is_active"},
-                            ],
-                            "rowData": _vehicles_to_rows(vehicles),
-                            "rowSelection": "single",
-                            "domLayout": "normal",
-                        }
+                fleet_host = ui.element("div").classes("cd-grid-host")
+                with fleet_host:
+                    grid = (
+                        ui.aggrid(
+                            {
+                                "columnDefs": [
+                                    selection_column(multiple=False),
+                                    {"headerName": "ID", "field": "id", "width": 70},
+                                    {"headerName": "Kod", "field": "code"},
+                                    {"headerName": "Typ", "field": "vehicle_type"},
+                                    {"headerName": "Palety", "field": "pallet_capacity"},
+                                    {"headerName": "Kg", "field": "weight_capacity_kg"},
+                                    {"headerName": "Aktywny", "field": "is_active"},
+                                    {"headerName": "Zajęty", "field": "is_busy"},
+                                ],
+                                "rowData": _vehicles_to_rows(vehicles),
+                                "rowSelection": "single",
+                                "suppressRowClickSelection": True,
+                                "domLayout": "normal",
+                            }
+                        )
+                        .classes("w-full")
+                        .style("height: 280px")
                     )
-                    .classes("w-full")
-                    .style("height: 280px")
-                )
                 editing_id: dict[str, int | None] = {"id": None}
                 with ui.row().classes("w-full gap-2 flex-wrap items-end"):
                     code_in = ui.input("Kod pojazdu").classes("w-40")
-                    type_in = ui.select(["truck", "van"], value="truck", label="Typ").classes(
-                        "w-32"
-                    )
+                    type_in = ui.select(
+                        ["bus", "truck", "curtain"], value="truck", label="Typ"
+                    ).classes("w-40")
                     pallets_in = ui.number("Palety", value=33, min=1).classes("w-28")
                     weight_in = ui.number("Ładowność kg", value=24000, min=1).classes("w-36")
                     active_in = ui.checkbox("Aktywny", value=True)
@@ -1612,30 +2080,40 @@ async def settings_page() -> None:
                 with ui.row().classes("cd-toolbar"):
                     ui.button("Zapisz", on_click=on_save_vehicle).props("color=primary")
                     ui.button("Edytuj zaznaczony", on_click=on_edit_vehicle)
+                    enlarge_grid_button(
+                        grid,
+                        fleet_host,
+                        title="Flota",
+                        compact_height="280px",
+                    )
 
             with ui.tab_panel(tab_locations):
                 with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Słownik współrzędnych").classes("font-bold")
                 locations = await run.io_bound(_load_locations)
                 loc_status = ui.label(f"Wpisów: {len(locations)}").classes("text-sm")
-                loc_grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": [
-                                {"headerName": "Nazwa", "field": "name"},
-                                {"headerName": "Miasto", "field": "city"},
-                                {"headerName": "Kraj", "field": "country"},
-                                {"headerName": "Lat", "field": "latitude"},
-                                {"headerName": "Lon", "field": "longitude"},
-                            ],
-                            "rowData": _locations_to_rows(locations),
-                            "rowSelection": "single",
-                            "domLayout": "normal",
-                        }
+                loc_host = ui.element("div").classes("cd-grid-host")
+                with loc_host:
+                    loc_grid = (
+                        ui.aggrid(
+                            {
+                                "columnDefs": [
+                                    selection_column(multiple=False),
+                                    {"headerName": "Nazwa", "field": "name"},
+                                    {"headerName": "Miasto", "field": "city"},
+                                    {"headerName": "Kraj", "field": "country"},
+                                    {"headerName": "Lat", "field": "latitude"},
+                                    {"headerName": "Lon", "field": "longitude"},
+                                ],
+                                "rowData": _locations_to_rows(locations),
+                                "rowSelection": "single",
+                                "suppressRowClickSelection": True,
+                                "domLayout": "normal",
+                            }
+                        )
+                        .classes("w-full")
+                        .style("height: 280px")
                     )
-                    .classes("w-full")
-                    .style("height: 280px")
-                )
                 with ui.row().classes("w-full gap-2 flex-wrap items-end"):
                     loc_name = ui.input("Nazwa").classes("w-48")
                     loc_city = ui.input("Miasto").classes("w-32")
@@ -1684,7 +2162,7 @@ async def settings_page() -> None:
 
                 async def on_load_seed() -> None:
                     n = await run.io_bound(_seed_locations_job)
-                    ui.notify(f"Dodano z seeda: {n}.", type="positive")
+                    ui.notify(f"Dodano ze słownika: {n}.", type="positive")
                     await refresh_locations()
 
                 async def on_apply_coords() -> None:
@@ -1698,22 +2176,30 @@ async def settings_page() -> None:
                     ui.button("Usuń zaznaczoną", on_click=on_delete_location).props(
                         "outline color=negative"
                     )
-                    ui.button("Wczytaj seed", on_click=on_load_seed).props("outline")
-                    ui.button("Uzupełnij coords w zleceniach", on_click=on_apply_coords).props(
-                        "outline"
+                    ui.button("Wczytaj słownik lokalizacji", on_click=on_load_seed).props("outline")
+                    ui.button(
+                        "Uzupełnij współrzędne w zleceniach",
+                        on_click=on_apply_coords,
+                    ).props("outline")
+                    enlarge_grid_button(
+                        loc_grid,
+                        loc_host,
+                        title="Lokalizacje",
+                        compact_height="280px",
                     )
 
             with ui.tab_panel(tab_params):
                 with ui.element("div").classes("cd-ops-hero w-full mb-2"):
                     ui.label("Parametry biznesowe").classes("font-bold")
                     ui.label(
-                        "Zapis w data/runtime_settings.json (nadpisuje .env). Bez sekretów i hosta."
+                        "Zmiany zapisują się lokalnie i obowiązują od razu. "
+                        "Hasła i adres serwera ustawia się poza tym ekranem."
                     ).classes("text-sm text-gray-700")
                 snap = editable_settings_snapshot()
                 fields: dict[str, ui.number] = {}
                 groups = [
                     (
-                        "Magazyn (depot)",
+                        "Magazyn przeładunkowy",
                         ["depot_latitude", "depot_longitude"],
                     ),
                     (

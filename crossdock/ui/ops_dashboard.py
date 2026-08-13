@@ -10,6 +10,15 @@ from nicegui import ui
 
 from crossdock.services.dashboard import DashboardSnapshot
 from crossdock.ui.layout import ops_page_header
+from crossdock.ui.widgets import info_hint
+
+
+def _status_tile(label: str, value: int, hint: str, extra_class: str = "") -> None:
+    with ui.element("div").classes(f"cd-ops-col {extra_class}".strip()):
+        with ui.element("div").classes("cd-ops-col-head"):
+            ui.label(label).classes("cd-ops-col-label")
+            info_hint(hint)
+        ui.label(str(value)).classes("cd-ops-col-n")
 
 
 def render_ops_focus_dashboard(
@@ -52,26 +61,27 @@ def render_ops_focus_dashboard(
             f"<div class='cd-ops-plan-sub'>{plan_sub_e}</div>"
             "</div>"
             f"{pill}"
-            "</div>"
-            "<div class='cd-ops-tri'>"
-            "<div class='cd-ops-col cd-ops-col-ride'>"
-            "<div class='cd-ops-col-label'>Jedzie</div>"
-            f"<div class='cd-ops-col-n'>{snap.riding}</div>"
-            "<p class='cd-ops-col-hint'>trasy gotowe do zatwierdzenia</p>"
-            "</div>"
-            "<div class='cd-ops-col'>"
-            "<div class='cd-ops-col-label'>Zostaje</div>"
-            f"<div class='cd-ops-col-n'>{snap.staying}</div>"
-            "<p class='cd-ops-col-hint'>do kolejki magazynowej</p>"
-            "</div>"
-            "<div class='cd-ops-col cd-ops-col-attn'>"
-            "<div class='cd-ops-col-label'>Wymaga uwagi</div>"
-            f"<div class='cd-ops-col-n'>{snap.attention}</div>"
-            "<p class='cd-ops-col-hint'>brak współrzędnych / limity</p>"
-            "</div>"
             "</div>",
             sanitize=False,
         )
+        with ui.element("div").classes("cd-ops-tri"):
+            _status_tile(
+                "Jedzie (trasy)",
+                snap.riding,
+                "trasy gotowe do zatwierdzenia",
+                "cd-ops-col-ride",
+            )
+            _status_tile(
+                "Zostaje w magazynie",
+                snap.staying,
+                "do kolejki magazynowej",
+            )
+            _status_tile(
+                "Wymaga uwagi",
+                snap.attention,
+                "brak współrzędnych / limity",
+                "cd-ops-col-attn",
+            )
         with ui.row().classes("cd-ops-cta ui-sans"):
             ui.button(
                 "Otwórz plany",
@@ -89,7 +99,7 @@ def render_ops_focus_dashboard(
     ui.html(
         "<div class='cd-ops-kpis'>"
         f"<div class='cd-ops-kpi'><b>{snap.total_orders}</b>"
-        "<span>Zlecenia łącznie</span></div>"
+        "<span>Wszystkie zlecenia</span></div>"
         f"<div class='cd-ops-kpi'><b>{snap.new_orders}</b>"
         "<span>Nowe</span></div>"
         f"<div class='cd-ops-kpi'><b>{snap.planned_orders}</b>"
