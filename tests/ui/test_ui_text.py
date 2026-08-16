@@ -52,6 +52,8 @@ def test_polish_labels_are_intact() -> None:
     assert "Zrealizowane" in pages
     assert "Zatwierdź trasę" in pages
     assert "Odblokuj trasę" in pages
+    assert '"headerName": "Wysłać do"' in pages
+    assert '"headerName": "Termin dostawy"' in pages
     plan_view = ROOT / "crossdock" / "services" / "plan_view.py"
     sla = plan_view.read_text(encoding="utf-8")
     assert "Ostatni dzień na wysłanie - ryzyko opóźnienia" in sla

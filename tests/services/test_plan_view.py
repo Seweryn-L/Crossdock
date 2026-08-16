@@ -170,6 +170,8 @@ def test_thin_route_sends_on_last_leave_day(db_session: Session) -> None:
     view = build_plan_view(db_session, settings=settings)
     assert view.routes[0]["disposition"] == "send"
     assert view.routes[0]["sla_label"] == SLA_LAST_DAY
+    assert view.routes[0]["must_leave_on"] == "2026-07-30"
+    assert view.routes[0]["delivery_by"] == "2026-08-01"
     assert view.summary is not None
     assert view.summary.riding == 1
     assert view.holding_order_ids == ()

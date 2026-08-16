@@ -900,6 +900,18 @@ async def plans_page() -> None:
                                             "width": 140,
                                         },
                                         {
+                                            "headerName": "Wysłać do",
+                                            "field": "must_leave_on",
+                                            "sortable": True,
+                                            "width": 130,
+                                        },
+                                        {
+                                            "headerName": "Termin dostawy",
+                                            "field": "delivery_by",
+                                            "sortable": True,
+                                            "width": 140,
+                                        },
+                                        {
                                             "headerName": "Decyzja",
                                             "field": "sla_label",
                                             "filter": True,

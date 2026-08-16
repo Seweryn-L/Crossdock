@@ -10,7 +10,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
-from crossdock.domain.sla import route_should_send, slack_days
+from crossdock.domain.sla import must_leave_by, route_should_send, slack_days
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 from crossdock.storage.tables import AssignmentItemRow, AssignmentRunRow
 from crossdock.text_pl import format_plan_label
@@ -102,6 +102,12 @@ def _min_slack_sort_key(row: dict[str, object]) -> int:
     return slack if isinstance(slack, int) else 10**9
 
 
+def _earliest_iso(dates: list[date]) -> str | None:
+    if not dates:
+        return None
+    return min(dates).isoformat()
+
+
 def build_plan_view(
     session: Session,
     settings: Settings | None = None,
@@ -148,6 +154,8 @@ def build_plan_view(
     drops_by_vehicle: dict[str, list[str]] = defaultdict(list)
     slack_by_order: dict[int, int] = {}
     slack_by_vehicle: dict[str, list[int]] = defaultdict(list)
+    leave_by_vehicle: dict[str, list[date]] = defaultdict(list)
+    delivery_by_vehicle: dict[str, list[date]] = defaultdict(list)
 
     for item in items:
         order = order_repo.get_by_id(item.order_id)
@@ -163,6 +171,9 @@ def build_plan_view(
             orders_by_vehicle[item.vehicle_code].add(item.order_id)
             if item.order_id in slack_by_order:
                 slack_by_vehicle[item.vehicle_code].append(slack_by_order[item.order_id])
+            if order is not None:
+                leave_by_vehicle[item.vehicle_code].append(must_leave_by(order.delivery_date, lead))
+                delivery_by_vehicle[item.vehicle_code].append(order.delivery_date)
             if item.drop_key:
                 drops_by_vehicle[item.vehicle_code].append(item.drop_key)
         elif bucket == "staying":
@@ -212,6 +223,8 @@ def build_plan_view(
                 "disposition": "send" if send else "hold",
                 "sla_label": sla_label,
                 "min_slack": min_slack,
+                "must_leave_on": _earliest_iso(leave_by_vehicle.get(route.vehicle_code, [])),
+                "delivery_by": _earliest_iso(delivery_by_vehicle.get(route.vehicle_code, [])),
             }
         )
     known = {r.vehicle_code for r in routes}
@@ -232,6 +245,8 @@ def build_plan_view(
                 "disposition": "send",
                 "sla_label": SLA_SEND,
                 "min_slack": min(slack_by_vehicle.get(code, []), default=None),
+                "must_leave_on": _earliest_iso(leave_by_vehicle.get(code, [])),
+                "delivery_by": _earliest_iso(delivery_by_vehicle.get(code, [])),
             }
         )
 
