@@ -621,6 +621,7 @@ body, .nicegui-content, .q-page, .q-layout {
 .cd-stat-value { font-size: 1.5rem; font-weight: 700; color: var(--cd-ink); }
 .cd-stat-label { font-size: 0.8rem; color: var(--cd-muted); margin-top: 0.15rem; }
 .cd-login-wrap {
+  width: 100% !important;
   min-height: 100vh !important;
   background: var(--cd-bg) !important;
   display: flex !important;
