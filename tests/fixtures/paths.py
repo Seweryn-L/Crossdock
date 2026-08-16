@@ -23,9 +23,11 @@ def tms_orders_fixture() -> Path:
     return matches[0]
 
 
-def june_carrier_load_fixture() -> Path:
-    """June 2026 e2open carrier load status sample (primary demo dataset)."""
-    path = FIXTURES_DIR / "carrier_load_status1620780.xlsx"
-    if not path.is_file():
-        raise FileNotFoundError(f"Brak fixture czerwcowego: {path}")
-    return path
+def e2open_order_fixtures() -> list[Path]:
+    """All e2open-format Excel fixtures (header row 3, city/postal columns)."""
+    weekly = sorted(FIXTURES_DIR.glob("carrier_load_status*.xlsx"))
+    company = sorted(FIXTURES_DIR.glob("*dane_od_firmy.xlsx"))
+    paths = weekly + company
+    if not paths:
+        raise FileNotFoundError(f"Brak fixture e2open w {FIXTURES_DIR}")
+    return paths

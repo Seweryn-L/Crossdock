@@ -1,5 +1,5 @@
 {
-  "_comment": "Wstepny slownik wspolrzednych (centra miast) dla fixture carrier_load_status1620780.xlsx + depot. MVP do geokodera.",
+  "_comment": "Coordinate dictionary (GeoNames postal centroids) for every pickup/delivery in tests/fixtures e2open Excel files, plus depot Herentals and TMS-only consignee aliases. Lookup key: name|city|postal_code|country (lowercase).",
   "locations": [
     {
       "name": "Crossdock Herentals (depot)",
@@ -14,184 +14,56 @@
       "city": "ANTWERP",
       "country": "BE",
       "postal_code": "2030",
-      "latitude": 51.2194,
-      "longitude": 4.4025
-    },
-    {
-      "name": "PASCUAL COSMETIQUE",
-      "city": "FERRIERE EN BRIE",
-      "country": "FR",
-      "postal_code": "77164",
-      "latitude": 48.8333,
-      "longitude": 2.7833
-    },
-    {
-      "name": "SICOSQUAI MATIERES PREMIERES R",
-      "city": "CAUDRY CEDEX",
-      "country": "FR",
-      "postal_code": "59544",
-      "latitude": 50.125,
-      "longitude": 3.4117
-    },
-    {
-      "name": "SISLEY INDUSTRIE",
-      "city": "BLOIS",
-      "country": "FR",
-      "postal_code": "41013",
-      "latitude": 47.5939,
-      "longitude": 1.3281
-    },
-    {
-      "name": "PASCUAL",
-      "city": "CLICHY",
-      "country": "FR",
-      "postal_code": "77164",
-      "latitude": 48.9047,
-      "longitude": 2.3048
-    },
-    {
-      "name": "FRESENIUS MEDICAL CARE SMAD",
-      "city": "SAVIGNY",
-      "country": "FR",
-      "postal_code": "69210",
-      "latitude": 45.7167,
-      "longitude": 4.7667
-    },
-    {
-      "name": "PIERRE FABRE MEDIC PRODUCTION",
-      "city": "GIEN",
-      "country": "FR",
-      "postal_code": "45500",
-      "latitude": 47.6897,
-      "longitude": 2.63
-    },
-    {
-      "name": "CORTEVA AGRISCIENCE INTERNATIONAL SÀRL TRANSTYM IL",
-      "city": "ILLZACH",
-      "country": "FR",
-      "postal_code": "68110",
-      "latitude": 47.7833,
-      "longitude": 7.35
-    },
-    {
-      "name": "BEAUTE RECHERCHE ET INDUSTRIES",
-      "city": "LASSIGNY",
-      "country": "FR",
-      "postal_code": "60310",
-      "latitude": 49.5889,
-      "longitude": 2.845
-    },
-    {
-      "name": "PROCTER & GAMBLE BLOIS",
-      "city": "BLOIS",
-      "country": "FR",
-      "postal_code": "41000",
-      "latitude": 47.5939,
-      "longitude": 1.3281
-    },
-    {
-      "name": "COSMETIQUE ACTIVE PRODUCTIONZI DE VICHY-RHUE",
-      "city": "MONTBEUGNY",
-      "country": "FR",
-      "postal_code": "3340",
-      "latitude": 46.5333,
-      "longitude": 3.4833
-    },
-    {
-      "name": "FRESENIUS MEDICAL CARE DEUTSCHLAND GMBH",
-      "city": "ST WENDEL",
-      "country": "DE",
-      "postal_code": "66606",
-      "latitude": 49.4667,
-      "longitude": 7.1667
-    },
-    {
-      "name": "STOCKMEIER CHEMIE GMBH  CO KG",
-      "city": "BIELEFELD",
-      "country": "DE",
-      "postal_code": "33609",
-      "latitude": 52.0302,
-      "longitude": 8.5325
-    },
-    {
-      "name": "SURVENTIS SURFACE TREATMENT GMBH",
-      "city": "LANGELSHEIM",
-      "country": "DE",
-      "postal_code": "38685",
-      "latitude": 51.9333,
-      "longitude": 10.3333
-    },
-    {
-      "name": "L'OREAL PRODUKTION DEUTSCHLANDGMBH & CO KG",
-      "city": "KARLSRUHE",
-      "country": "DE",
-      "postal_code": "76187",
-      "latitude": 49.0069,
-      "longitude": 8.4037
-    },
-    {
-      "name": "MERCKLE GMBHKREDITORENBUCHHALTUNG",
-      "city": "ULM",
-      "country": "DE",
-      "postal_code": "89079",
-      "latitude": 48.4011,
-      "longitude": 9.9876
-    },
-    {
-      "name": "BAYER BITTERFIELD GMBHHERR DR REICHEL",
-      "city": "BITTERFELD-WOLFEN GREPPIN",
-      "country": "DE",
-      "postal_code": "6803",
-      "latitude": 51.6167,
-      "longitude": 12.3167
+      "latitude": 51.2199,
+      "longitude": 4.4035
     },
     {
       "name": "LR HEALTH & BEAUTY SYSTEMS GMBH",
       "city": "AHLEN",
       "country": "DE",
       "postal_code": "59227",
-      "latitude": 51.7633,
-      "longitude": 7.8911
+      "latitude": 51.7602,
+      "longitude": 7.8845
     },
     {
-      "name": "URGO SAS LABORATOIRESPARC EXCELLENCE 2000",
-      "city": "CHEVIGNY-ST. SAUVEUR",
-      "country": "FR",
-      "postal_code": "21800",
-      "latitude": 47.3,
-      "longitude": 5.1167
-    },
-    {
-      "name": "CARL BECHEM GMBH",
-      "city": "GARDELEGEN - MIESTE",
+      "name": "SALUTAS PHARMA GMBH",
+      "city": "BARLEBEN",
       "country": "DE",
-      "postal_code": "39649",
-      "latitude": 52.5167,
-      "longitude": 11.4
+      "postal_code": "39179",
+      "latitude": 52.192567,
+      "longitude": 11.5963
     },
     {
-      "name": "LABORATOIRE D'INNOVATION DE CHATEAU",
-      "city": "CHATEAUGIRON FRANCE",
-      "country": "FR",
-      "postal_code": "35410",
-      "latitude": 48.0483,
-      "longitude": -1.5033
-    },
-    {
-      "name": "OPELLA HEALTHCARE INTERNATIONAL SAS",
-      "city": "LISIEUX",
-      "country": "FR",
-      "postal_code": "14104",
-      "latitude": 49.1467,
-      "longitude": 0.2272
-    },
-    {
-      "name": "SHP EUROPE GMBH & CO KG",
-      "city": "WASSERTRUEDINGEN",
+      "name": "DIESSNER GMBH & CO  KGLACK- UND FARBENFABRIK",
+      "city": "BERLIN",
       "country": "DE",
-      "postal_code": "91714",
-      "latitude": 49.0333,
-      "longitude": 10.6
+      "postal_code": "12347",
+      "latitude": 52.4509,
+      "longitude": 13.4281
+    },
+    {
+      "name": "STOCKMEIER CHEMIE GMBH  CO KG",
+      "city": "BIELEFELD",
+      "country": "DE",
+      "postal_code": "33609",
+      "latitude": 52.0342,
+      "longitude": 8.5553
+    },
+    {
+      "name": "GLATT PHARMACEUTICAL SERVICES",
+      "city": "BINZEN",
+      "country": "DE",
+      "postal_code": "79589",
+      "latitude": 47.6333,
+      "longitude": 7.6167
+    },
+    {
+      "name": "BAYER BITTERFIELD GMBHHERR DR REICHEL",
+      "city": "BITTERFELD-WOLFEN GREPPIN",
+      "country": "DE",
+      "postal_code": "06803",
+      "latitude": 51.6468,
+      "longitude": 12.3007
     },
     {
       "name": "SZAIDEL COSMETIC GMBH",
@@ -202,68 +74,188 @@
       "longitude": 7.4333
     },
     {
-      "name": "ENCRES DUBUITZI DE MITRY COMPANS",
-      "city": "MITRY",
-      "country": "FR",
-      "postal_code": "77290",
-      "latitude": 48.9833,
-      "longitude": 2.6167
+      "name": "KAO MANUFACTURING GERMANY GMBH",
+      "city": "DARMSTADT - EBERSTADT",
+      "country": "DE",
+      "postal_code": "64297",
+      "latitude": 49.8192,
+      "longitude": 8.6449
     },
     {
-      "name": "JNTL CONSUMER HEALTH (FRANCE) SAS",
-      "city": "VAL-DE-REUIL",
-      "country": "FR",
-      "postal_code": "27100",
-      "latitude": 49.2667,
-      "longitude": 1.2167
+      "name": "SCHEREN LOGISTIK GMBH",
+      "city": "DUSSELDORF",
+      "country": "DE",
+      "postal_code": "40589",
+      "latitude": 51.164424,
+      "longitude": 6.833784
     },
     {
-      "name": "LAFFORT",
-      "city": "FLOIRAC",
-      "country": "FR",
-      "postal_code": "33270",
-      "latitude": 44.8333,
-      "longitude": -0.5167
+      "name": "CHEMETALL GMBHZWEIGNIEDERLASSUNG",
+      "city": "FRANKFURT AM MAIN",
+      "country": "DE",
+      "postal_code": "60487",
+      "latitude": 50.126949,
+      "longitude": 8.62997
     },
     {
-      "name": "PATHEON FRANCE SA",
-      "city": "BOURGOIN-JAILLEU CEDEX",
-      "country": "FR",
-      "postal_code": "38307",
-      "latitude": 45.5833,
-      "longitude": 5.2833
+      "name": "CARL BECHEM GMBH",
+      "city": "GARDELEGEN - MIESTE",
+      "country": "DE",
+      "postal_code": "39649",
+      "latitude": 52.503375,
+      "longitude": 11.1814
     },
     {
-      "name": "ELYSEE COSMETIQUES SAZI TECHNOPOLE SUD",
-      "city": "FORBACH",
-      "country": "FR",
-      "postal_code": "57601",
-      "latitude": 49.19,
-      "longitude": 6.9
+      "name": "PROCTER AND GAMBLE INT OPT SAP AND G MFG GMBH",
+      "city": "GROSS GERAU",
+      "country": "DE",
+      "postal_code": "64521",
+      "latitude": 49.9214,
+      "longitude": 8.4825
     },
     {
-      "name": "IMCD FRANCE C/O DSV SOLUTIONSZAC DE LA BELLE ASSIS",
-      "city": "OURSEL MAISON",
-      "country": "FR",
-      "postal_code": "60480",
-      "latitude": 49.55,
-      "longitude": 2.1667
+      "name": "BERLIN - CHEMIE AG",
+      "city": "GROSSBEEREN",
+      "country": "DE",
+      "postal_code": "14979",
+      "latitude": 52.3586,
+      "longitude": 13.3099
     },
     {
       "name": "PHARMACHEMICALS HANDELS GMBH",
       "city": "HALBERGMOOS - GOLDACH",
       "country": "DE",
       "postal_code": "85399",
-      "latitude": 48.3167,
-      "longitude": 11.8
+      "latitude": 48.3275,
+      "longitude": 11.7514
     },
     {
-      "name": "SALUTAS PHARMA GMBH",
-      "city": "BARLEBEN",
+      "name": "FIT GMBH",
+      "city": "HIRSCHFELDE",
       "country": "DE",
-      "postal_code": "39179",
-      "latitude": 52.2,
-      "longitude": 11.6167
+      "postal_code": "02788",
+      "latitude": 50.9574,
+      "longitude": 14.881767
+    },
+    {
+      "name": "VINK CHEMICALS GMBH & CO. KG",
+      "city": "KAKENSTORF",
+      "country": "DE",
+      "postal_code": "21255",
+      "latitude": 53.2759,
+      "longitude": 9.7085
+    },
+    {
+      "name": "L'OREAL PRODUKTION DEUTSCHLANDGMBH & CO KG",
+      "city": "KARLSRUHE",
+      "country": "DE",
+      "postal_code": "76187",
+      "latitude": 49.0224,
+      "longitude": 8.3742
+    },
+    {
+      "name": "SURVENTIS SURFACE TREATMENT GMBH",
+      "city": "LANGELSHEIM",
+      "country": "DE",
+      "postal_code": "38685",
+      "latitude": 51.9238,
+      "longitude": 10.3866
+    },
+    {
+      "name": "LW CRETSCHMAR GMBH  CO KG HENKEL",
+      "city": "LEIPZIG",
+      "country": "DE",
+      "postal_code": "04316",
+      "latitude": 51.3667,
+      "longitude": 12.3833
+    },
+    {
+      "name": "WAGENER & CO GMBH",
+      "city": "LENGERICH",
+      "country": "DE",
+      "postal_code": "49525",
+      "latitude": 52.1866,
+      "longitude": 7.8604
+    },
+    {
+      "name": "TRID TRANSPORT GMBH",
+      "city": "LUDWIGSFELDE OT GENSHAGEN",
+      "country": "DE",
+      "postal_code": "14974",
+      "latitude": 52.2779,
+      "longitude": 13.2468
+    },
+    {
+      "name": "POPACK LOGISTIK GMBH",
+      "city": "MAINZ - MARIENBORN",
+      "country": "DE",
+      "postal_code": "55127",
+      "latitude": 50.0,
+      "longitude": 8.2711
+    },
+    {
+      "name": "YES MLC GMBH CO UNIVAR BV",
+      "city": "MAINZ-KASTEL",
+      "country": "DE",
+      "postal_code": "55252",
+      "latitude": 50.0102,
+      "longitude": 8.2844
+    },
+    {
+      "name": "VINK CHEMICALS MEMMINGEN GMBH",
+      "city": "MEMMINGEN",
+      "country": "DE",
+      "postal_code": "87700",
+      "latitude": 47.9837,
+      "longitude": 10.1853
+    },
+    {
+      "name": "TAKEDA GMBHBETRIEBSSTAETTE ORANIENBURG",
+      "city": "ORANIENBURG",
+      "country": "DE",
+      "postal_code": "16515",
+      "latitude": 52.78913,
+      "longitude": 13.31069
+    },
+    {
+      "name": "DAIICHI SANKYO EUROPE GMBHABT GALENIK FRAU PLATZER",
+      "city": "PFAFFENHOFEN",
+      "country": "DE",
+      "postal_code": "85276",
+      "latitude": 48.51525,
+      "longitude": 11.5025
+    },
+    {
+      "name": "VIKTORIA APOTHEKE - STERILFERTIGUNGDR. FRITZ TRENN",
+      "city": "SAARBRÜCKEN",
+      "country": "DE",
+      "postal_code": "66111",
+      "latitude": 49.2461,
+      "longitude": 7.0022
+    },
+    {
+      "name": "INNOVATE GMBH",
+      "city": "SCHÖNBURG",
+      "country": "DE",
+      "postal_code": "06618",
+      "latitude": 51.113714,
+      "longitude": 11.834607
+    },
+    {
+      "name": "FRESENIUS MEDICAL CARE DEUTSCHLAND GMBH",
+      "city": "ST WENDEL",
+      "country": "DE",
+      "postal_code": "66606",
+      "latitude": 49.4663,
+      "longitude": 7.1681
+    },
+    {
+      "name": "DREITURM GMBH",
+      "city": "STEINAU AN DER STRASSE",
+      "country": "DE",
+      "postal_code": "36396",
+      "latitude": 50.314,
+      "longitude": 9.4633
     },
     {
       "name": "MÄURER + WIRTZ GMBH & CO  KGABT. RECHNUNGSWESEN",
@@ -274,116 +266,668 @@
       "longitude": 6.2333
     },
     {
-      "name": "ONDAL FRANCE S.A.R.L. (LE 2229)ONDAL FRANCE S.A.R.",
-      "city": "SARREGUEMINES",
-      "country": "FR",
-      "postal_code": "57203",
-      "latitude": 49.1167,
-      "longitude": 7.0667
-    },
-    {
-      "name": "LABORATOIRES CHEMINEAU",
-      "city": "VOUVRAY",
-      "country": "FR",
-      "postal_code": "37210",
-      "latitude": 47.4167,
-      "longitude": 0.8
-    },
-    {
-      "name": "CHANEL PARFUMS BEAUTEZAC DE MERCIERES",
-      "city": "COMPIEGNE",
-      "country": "FR",
-      "postal_code": "60205",
-      "latitude": 49.4178,
-      "longitude": 2.8261
-    },
-    {
-      "name": "SICAFC/O LABORATOIRE CARMAIN",
-      "city": "CARPENTRAS",
-      "country": "FR",
-      "postal_code": "84200",
-      "latitude": 44.05,
-      "longitude": 5.05
-    },
-    {
-      "name": "MF PRODUCTIONS",
-      "city": "BELLEVIGNE LES CHATEAUX",
-      "country": "FR",
-      "postal_code": "49400",
-      "latitude": 47.1667,
-      "longitude": -0.1667
-    },
-    {
-      "name": "GEMEY PARIS MAYBELLINE NEW YORKCENTRE ROUTIER POLE",
-      "city": "ST JEAN DE LA RUELLE",
-      "country": "FR",
-      "postal_code": "45144",
-      "latitude": 47.9167,
-      "longitude": 1.8667
-    },
-    {
-      "name": "PROCTER AND GAMBLE INT OPT SAP AND G MFG GMBH",
-      "city": "GROSS GERAU",
+      "name": "MERCKLE GMBHKREDITORENBUCHHALTUNG",
+      "city": "ULM",
       "country": "DE",
-      "postal_code": "64521",
-      "latitude": 49.9167,
-      "longitude": 8.4833
+      "postal_code": "89079",
+      "latitude": 48.3568,
+      "longitude": 9.9601
     },
     {
-      "name": "YES MLC GMBH CO UNIVAR BV",
-      "city": "MAINZ-KASTEL",
+      "name": "SHP EUROPE GMBH & CO KG",
+      "city": "WASSERTRUEDINGEN",
       "country": "DE",
-      "postal_code": "55252",
-      "latitude": 50.0167,
-      "longitude": 8.2833
+      "postal_code": "91714",
+      "latitude": 49.0433,
+      "longitude": 10.5991
     },
     {
-      "name": "LABORATOIRES DUCASTEL",
-      "city": "CASTELFRANC",
-      "country": "FR",
-      "postal_code": "46140",
-      "latitude": 44.6167,
-      "longitude": 1.2167
+      "name": "NOVARTIS PHARMA PRODUKTIONS GMBH",
+      "city": "WEHR",
+      "country": "DE",
+      "postal_code": "79664",
+      "latitude": 47.6298,
+      "longitude": 7.9042
     },
     {
-      "name": "COSMEVA SLTSERVICE RECEPTION",
-      "city": "SAVIGNY LE TEMPLE",
+      "name": "MICROCELLULOSE WEISSENBORN GMBH & CO KG",
+      "city": "WEISSENBORN/ERZGEB",
+      "country": "DE",
+      "postal_code": "09600",
+      "latitude": 50.910333,
+      "longitude": 13.3632
+    },
+    {
+      "name": "MERCK PERFORMANCE MATERIALS GMBH",
+      "city": "WIESBADEN",
+      "country": "DE",
+      "postal_code": "65203",
+      "latitude": 50.045,
+      "longitude": 8.2453
+    },
+    {
+      "name": "ROLLKONTOR SPEDITIONSGES. MBHAM FRAUWALD 14",
+      "city": "WIESBADEN",
+      "country": "DE",
+      "postal_code": "65189",
+      "latitude": 50.068438,
+      "longitude": 8.243649
+    },
+    {
+      "name": "TRANS SERVICE TEAM SPEDITIONS GMBHWIN COSMETIC GMB",
+      "city": "WORMS",
+      "country": "DE",
+      "postal_code": "67547",
+      "latitude": 49.646142,
+      "longitude": 8.364972
+    },
+    {
+      "name": "NAOS LES LABORATOIRES",
+      "city": "AIX EN PROVENCE",
       "country": "FR",
-      "postal_code": "77545",
-      "latitude": 48.5833,
-      "longitude": 2.5833
+      "postal_code": "13290",
+      "latitude": 43.5283,
+      "longitude": 5.4497
     },
     {
       "name": "SANOFI WINTHROP INDUSTRIE",
       "city": "AMBARES",
       "country": "FR",
       "postal_code": "33440",
-      "latitude": 44.9333,
-      "longitude": -0.5167
+      "latitude": 44.944733,
+      "longitude": -0.4983
     },
     {
-      "name": "VINK CHEMICALS GMBH & CO. KG",
-      "city": "KAKENSTORF",
-      "country": "DE",
-      "postal_code": "21255",
-      "latitude": 53.3167,
-      "longitude": 9.7667
+      "name": "SANOFI WINTHROP INDUSTRIE",
+      "city": "AMBARES-ET-LAGRAVE CÉDEX",
+      "country": "FR",
+      "postal_code": "33565",
+      "latitude": 44.9274,
+      "longitude": -0.4914
     },
     {
-      "name": "DAIICHI SANKYO EUROPE GMBHABT GALENIK FRAU PLATZER",
-      "city": "PFAFFENHOFEN",
-      "country": "DE",
-      "postal_code": "85276",
-      "latitude": 48.5333,
-      "longitude": 11.5167
+      "name": "L'OREAL SA",
+      "city": "AULNAY SOUS BOIS",
+      "country": "FR",
+      "postal_code": "93600",
+      "latitude": 48.9381,
+      "longitude": 2.494
     },
     {
-      "name": "INNOVATE GMBH",
-      "city": "SCHÖNBURG",
-      "country": "DE",
-      "postal_code": "6618",
-      "latitude": 51.1667,
-      "longitude": 11.8667
+      "name": "MF PRODUCTIONS",
+      "city": "BELLEVIGNE LES CHATEAUX",
+      "country": "FR",
+      "postal_code": "49400",
+      "latitude": 47.243833,
+      "longitude": -0.087222
+    },
+    {
+      "name": "PROCTER & GAMBLE BLOIS",
+      "city": "BLOIS",
+      "country": "FR",
+      "postal_code": "41000",
+      "latitude": 47.62102,
+      "longitude": 1.33564
+    },
+    {
+      "name": "SISLEY INDUSTRIE",
+      "city": "BLOIS",
+      "country": "FR",
+      "postal_code": "41013",
+      "latitude": 47.5943,
+      "longitude": 1.3291
+    },
+    {
+      "name": "LABORATOIRES PROVENDI SAS",
+      "city": "BONS-EN-CHABLAIS",
+      "country": "FR",
+      "postal_code": "74890",
+      "latitude": 46.273925,
+      "longitude": 6.399475
+    },
+    {
+      "name": "PATHEON FRANCE SA",
+      "city": "BOURGOIN-JAILLEU CEDEX",
+      "country": "FR",
+      "postal_code": "38307",
+      "latitude": 45.5861,
+      "longitude": 5.2736
+    },
+    {
+      "name": "LAMOTHE ABIET",
+      "city": "CANEJAN",
+      "country": "FR",
+      "postal_code": "33610",
+      "latitude": 44.75385,
+      "longitude": -0.66815
+    },
+    {
+      "name": "SICAFC/O LABORATOIRE CARMAIN",
+      "city": "CARPENTRAS",
+      "country": "FR",
+      "postal_code": "84200",
+      "latitude": 44.0551,
+      "longitude": 5.0481
+    },
+    {
+      "name": "LABORATOIRES DUCASTEL",
+      "city": "CASTELFRANC",
+      "country": "FR",
+      "postal_code": "46140",
+      "latitude": 44.465083,
+      "longitude": 1.270833
+    },
+    {
+      "name": "SICOSQUAI MATIERES PREMIERES R",
+      "city": "CAUDRY CEDEX",
+      "country": "FR",
+      "postal_code": "59544",
+      "latitude": 50.1249,
+      "longitude": 3.4119
+    },
+    {
+      "name": "SOBOTRAM",
+      "city": "CHALON SUR SAONE",
+      "country": "FR",
+      "postal_code": "71105",
+      "latitude": 46.7811,
+      "longitude": 4.8537
+    },
+    {
+      "name": "GUERLAIN",
+      "city": "CHARTRES",
+      "country": "FR",
+      "postal_code": "28000",
+      "latitude": 48.4469,
+      "longitude": 1.4892
+    },
+    {
+      "name": "RECKITT BENCKISER",
+      "city": "CHARTRES",
+      "country": "FR",
+      "postal_code": "28011",
+      "latitude": 48.4469,
+      "longitude": 1.4892
+    },
+    {
+      "name": "CONDAT",
+      "city": "CHASSE SUR RHONE",
+      "country": "FR",
+      "postal_code": "38670",
+      "latitude": 45.5785,
+      "longitude": 4.8098
+    },
+    {
+      "name": "LABORATOIRE D'INNOVATION DE CHATEAU",
+      "city": "CHATEAUGIRON FRANCE",
+      "country": "FR",
+      "postal_code": "35410",
+      "latitude": 48.04996,
+      "longitude": -1.49692
+    },
+    {
+      "name": "URGO SAS LABORATOIRESPARC EXCELLENCE 2000",
+      "city": "CHEVIGNY-ST. SAUVEUR",
+      "country": "FR",
+      "postal_code": "21800",
+      "latitude": 47.2917,
+      "longitude": 5.1166
+    },
+    {
+      "name": "L'OREAL",
+      "city": "CHEVILLY LARUE",
+      "country": "FR",
+      "postal_code": "94550",
+      "latitude": 48.7648,
+      "longitude": 2.3503
+    },
+    {
+      "name": "PASCUAL",
+      "city": "CLICHY",
+      "country": "FR",
+      "postal_code": "77164",
+      "latitude": 48.8235,
+      "longitude": 2.7066
+    },
+    {
+      "name": "UNITHER LIQUID MANUFACTURING",
+      "city": "COLOMIERS",
+      "country": "FR",
+      "postal_code": "31773",
+      "latitude": 43.6106,
+      "longitude": 1.3347
+    },
+    {
+      "name": "CHANEL PARFUMS BEAUTE",
+      "city": "COMPIEGNE",
+      "country": "FR",
+      "postal_code": "60205",
+      "latitude": 49.4179,
+      "longitude": 2.8261
+    },
+    {
+      "name": "CHANEL PARFUMS BEAUTEZAC DE MERCIERES",
+      "city": "COMPIEGNE",
+      "country": "FR",
+      "postal_code": "60205",
+      "latitude": 49.4179,
+      "longitude": 2.8261
+    },
+    {
+      "name": "OPELLA HEALTHCARE INTERNATIONAL SAS",
+      "city": "COMPIEGNE",
+      "country": "FR",
+      "postal_code": "60205",
+      "latitude": 49.4179,
+      "longitude": 2.8261
+    },
+    {
+      "name": "LDU URIAGE",
+      "city": "ECHIROLLES",
+      "country": "FR",
+      "postal_code": "38130",
+      "latitude": 45.146,
+      "longitude": 5.7144
+    },
+    {
+      "name": "DELPHARM EVREUX",
+      "city": "EVREUX",
+      "country": "FR",
+      "postal_code": "27002",
+      "latitude": 49.0241,
+      "longitude": 1.1508
+    },
+    {
+      "name": "PASCUAL COSMETIQUE",
+      "city": "FERRIERE EN BRIE",
+      "country": "FR",
+      "postal_code": "77164",
+      "latitude": 48.8235,
+      "longitude": 2.7066
+    },
+    {
+      "name": "ROVALUSINE DU TREMBLAY",
+      "city": "FLERS",
+      "country": "FR",
+      "postal_code": "61101",
+      "latitude": 48.943593,
+      "longitude": -0.130543
+    },
+    {
+      "name": "LAFFORT",
+      "city": "FLOIRAC",
+      "country": "FR",
+      "postal_code": "33270",
+      "latitude": 44.82495,
+      "longitude": -0.5147
+    },
+    {
+      "name": "ASTREA FONTAINE SAS",
+      "city": "FONTAINE LES DIJONS",
+      "country": "FR",
+      "postal_code": "21121",
+      "latitude": 47.3769,
+      "longitude": 4.9744
+    },
+    {
+      "name": "ELYSEE COSMETIQUES SAZI TECHNOPOLE SUD",
+      "city": "FORBACH",
+      "country": "FR",
+      "postal_code": "57601",
+      "latitude": 49.1885,
+      "longitude": 6.8926
+    },
+    {
+      "name": "LABORATOIRES JUVA PRODUCTIONS",
+      "city": "FORBACH",
+      "country": "FR",
+      "postal_code": "57600",
+      "latitude": 49.169275,
+      "longitude": 6.8935
+    },
+    {
+      "name": "DELPHARM GAILLARD",
+      "city": "GAILLARD",
+      "country": "FR",
+      "postal_code": "74240",
+      "latitude": 46.1853,
+      "longitude": 6.2069
+    },
+    {
+      "name": "SOPROCOSZ I LE MOULIN DE TOUS VENTS",
+      "city": "GAUCHY/SAINT QUENTIN",
+      "country": "FR",
+      "postal_code": "02106",
+      "latitude": 49.8276,
+      "longitude": 3.2737
+    },
+    {
+      "name": "LES LABORATOIRES SERVIER",
+      "city": "GIDY",
+      "country": "FR",
+      "postal_code": "45520",
+      "latitude": 48.005125,
+      "longitude": 1.847825
+    },
+    {
+      "name": "PIERRE FABRE MEDIC PRODUCTION",
+      "city": "GIEN",
+      "country": "FR",
+      "postal_code": "45500",
+      "latitude": 47.669929,
+      "longitude": 2.612971
+    },
+    {
+      "name": "PIERRE FABRE MEDICAMENT PRODUCTION",
+      "city": "GIEN",
+      "country": "FR",
+      "postal_code": "45500",
+      "latitude": 47.669929,
+      "longitude": 2.612971
+    },
+    {
+      "name": "FAREVABIORD 70 PAR MIRABEL ET BLACONS",
+      "city": "GIGORS ET LOZERON",
+      "country": "FR",
+      "postal_code": "26400",
+      "latitude": 44.730892,
+      "longitude": 5.055904
+    },
+    {
+      "name": "FARMACLAIR SAS",
+      "city": "HEROUVILLE ST CLAIR",
+      "country": "FR",
+      "postal_code": "14200",
+      "latitude": 49.2109,
+      "longitude": -0.3065
+    },
+    {
+      "name": "VANDEPUTTE S.A.S (BSM)",
+      "city": "HESDIN L'ABBÉ",
+      "country": "FR",
+      "postal_code": "62360",
+      "latitude": 50.686011,
+      "longitude": 1.657456
+    },
+    {
+      "name": "CORTEVA AGRISCIENCE INTERNATIONAL SÀRL TRANSTYM IL",
+      "city": "ILLZACH",
+      "country": "FR",
+      "postal_code": "68110",
+      "latitude": 47.7742,
+      "longitude": 7.3518
+    },
+    {
+      "name": "DELPHARM L'AIGLE",
+      "city": "L'AIGLE CEDEX",
+      "country": "FR",
+      "postal_code": "61303",
+      "latitude": 48.7622,
+      "longitude": 0.6275
+    },
+    {
+      "name": "GROUPE ROCHER OPÉRATIONS",
+      "city": "LA GACILLY",
+      "country": "FR",
+      "postal_code": "56200",
+      "latitude": 47.751367,
+      "longitude": -2.157533
+    },
+    {
+      "name": "BEAUTE RECHERCHE ET INDUSTRIES",
+      "city": "LASSIGNY",
+      "country": "FR",
+      "postal_code": "60310",
+      "latitude": 49.616591,
+      "longitude": 2.859232
+    },
+    {
+      "name": "UNILEVER FRANCE HPC INDUSTRIES",
+      "city": "LE MEUX",
+      "country": "FR",
+      "postal_code": "60880",
+      "latitude": 49.3771,
+      "longitude": 2.762533
+    },
+    {
+      "name": "OPELLA HEALTHCARE INTERNATIONAL SAS",
+      "city": "LISIEUX",
+      "country": "FR",
+      "postal_code": "14104",
+      "latitude": 49.1466,
+      "longitude": 0.2293
+    },
+    {
+      "name": "SANOFI WINTHROP INDUSTRIE",
+      "city": "MARCY-L'ETOILE",
+      "country": "FR",
+      "postal_code": "69280",
+      "latitude": 45.7785,
+      "longitude": 4.69825
+    },
+    {
+      "name": "ENCRES DUBUITZI DE MITRY COMPANS",
+      "city": "MITRY",
+      "country": "FR",
+      "postal_code": "77290",
+      "latitude": 48.98895,
+      "longitude": 2.6406
+    },
+    {
+      "name": "COSMETIQUE ACTIVE PRODUCTIONZI DE VICHY-RHUE",
+      "city": "MONTBEUGNY",
+      "country": "FR",
+      "postal_code": "03340",
+      "latitude": 46.446537,
+      "longitude": 3.436538
+    },
+    {
+      "name": "ELP",
+      "city": "MONTREM",
+      "country": "FR",
+      "postal_code": "24110",
+      "latitude": 45.122512,
+      "longitude": 0.549175
+    },
+    {
+      "name": "SYNGENTA CROP PROTECTION AGC/O SIPCAM / PHYTEUROPE",
+      "city": "MONTREUIL BELLAY",
+      "country": "FR",
+      "postal_code": "49260",
+      "latitude": 47.157192,
+      "longitude": -0.13385
+    },
+    {
+      "name": "INTERSPRAY",
+      "city": "NEUVIC/L'ISLE",
+      "country": "FR",
+      "postal_code": "24190",
+      "latitude": 45.119244,
+      "longitude": 0.431611
+    },
+    {
+      "name": "EUROWIPESZA DE L'AUNAY",
+      "city": "NOGENT LE ROTROU",
+      "country": "FR",
+      "postal_code": "28400",
+      "latitude": 48.31589,
+      "longitude": 0.87458
+    },
+    {
+      "name": "IMCD FRANCE C/O DSV SOLUTIONSZAC DE LA BELLE ASSIS",
+      "city": "OURSEL MAISON",
+      "country": "FR",
+      "postal_code": "60480",
+      "latitude": 49.547609,
+      "longitude": 2.220359
+    },
+    {
+      "name": "MERIBEL PHARMA PESSAC",
+      "city": "PESSAC",
+      "country": "FR",
+      "postal_code": "33608",
+      "latitude": 44.8056,
+      "longitude": -0.6324
+    },
+    {
+      "name": "FAREVA AMBOISE",
+      "city": "POCÉ-SUR-CISSE",
+      "country": "FR",
+      "postal_code": "37530",
+      "latitude": 47.44668,
+      "longitude": 1.02586
+    },
+    {
+      "name": "GIVAUDAN FRANCE SAS",
+      "city": "POMACLE",
+      "country": "FR",
+      "postal_code": "51110",
+      "latitude": 49.347283,
+      "longitude": 4.150758
+    },
+    {
+      "name": "FATTON SERVICE LOGISTIQUE",
+      "city": "PUSIGNAN",
+      "country": "FR",
+      "postal_code": "69330",
+      "latitude": 45.78165,
+      "longitude": 5.049325
+    },
+    {
+      "name": "DELPHARM REIMS",
+      "city": "REIMS",
+      "country": "FR",
+      "postal_code": "51100",
+      "latitude": 49.2653,
+      "longitude": 4.0285
+    },
+    {
+      "name": "SUD COSMETICS",
+      "city": "SAINT CHAMAS",
+      "country": "FR",
+      "postal_code": "13250",
+      "latitude": 43.5566,
+      "longitude": 5.0533
+    },
+    {
+      "name": "PARFUMS CHRISTIAN DIOR",
+      "city": "SAINT JEAN DE BRAYE",
+      "country": "FR",
+      "postal_code": "45800",
+      "latitude": 47.9065,
+      "longitude": 1.9845
+    },
+    {
+      "name": "EUROGERM SA",
+      "city": "SAINT-APOLLINAIRE",
+      "country": "FR",
+      "postal_code": "21850",
+      "latitude": 47.3333,
+      "longitude": 5.0833
+    },
+    {
+      "name": "BIC CONTE",
+      "city": "SAMER",
+      "country": "FR",
+      "postal_code": "62830",
+      "latitude": 50.628256,
+      "longitude": 1.738367
+    },
+    {
+      "name": "ONDAL FRANCE S.A.R.L",
+      "city": "SARREGUEMINES",
+      "country": "FR",
+      "postal_code": "57203",
+      "latitude": 49.11,
+      "longitude": 7.0675
+    },
+    {
+      "name": "ONDAL FRANCE S.A.R.L. (LE 2229)ONDAL FRANCE S.A.R.",
+      "city": "SARREGUEMINES",
+      "country": "FR",
+      "postal_code": "57203",
+      "latitude": 49.11,
+      "longitude": 7.0675
+    },
+    {
+      "name": "FRESENIUS MEDICAL CARE SMAD",
+      "city": "SAVIGNY",
+      "country": "FR",
+      "postal_code": "69210",
+      "latitude": 45.821992,
+      "longitude": 4.615667
+    },
+    {
+      "name": "COSMEVA SLTSERVICE RECEPTION",
+      "city": "SAVIGNY LE TEMPLE",
+      "country": "FR",
+      "postal_code": "77545",
+      "latitude": 48.5741,
+      "longitude": 2.5829
+    },
+    {
+      "name": "PHARMA  BEAUTY LE CASTELLET EN PROV",
+      "city": "SIGNES",
+      "country": "FR",
+      "postal_code": "83870",
+      "latitude": 43.2908,
+      "longitude": 5.8628
+    },
+    {
+      "name": "GEMEY PARIS MAYBELLINE NEW YORKCENTRE ROUTIER POLE",
+      "city": "ST JEAN DE LA RUELLE",
+      "country": "FR",
+      "postal_code": "45144",
+      "latitude": 47.9113,
+      "longitude": 1.8648
+    },
+    {
+      "name": "THEPENIER PHARMA INDUSTRIE",
+      "city": "ST LANGIS LES MORTAGNE",
+      "country": "FR",
+      "postal_code": "61400",
+      "latitude": 48.488794,
+      "longitude": 0.582112
+    },
+    {
+      "name": "SANOFI WINTHROP INDUSTRIE",
+      "city": "TOURS",
+      "country": "FR",
+      "postal_code": "37071",
+      "latitude": 47.3948,
+      "longitude": 0.704
+    },
+    {
+      "name": "JNTL CONSUMER HEALTH (FRANCE) SAS",
+      "city": "VAL-DE-REUIL",
+      "country": "FR",
+      "postal_code": "27100",
+      "latitude": 49.267833,
+      "longitude": 1.226633
+    },
+    {
+      "name": "BCM COSMETIQUES",
+      "city": "VITRE",
+      "country": "FR",
+      "postal_code": "35500",
+      "latitude": 48.135264,
+      "longitude": -1.216964
+    },
+    {
+      "name": "LABORATOIRES CHEMINEAU",
+      "city": "VOUVRAY",
+      "country": "FR",
+      "postal_code": "37210",
+      "latitude": 47.427467,
+      "longitude": 0.81945
+    },
+    {
+      "name": "BIOKOSMES S R L",
+      "city": "BOSISIO PARINI  LC",
+      "country": "IT",
+      "postal_code": "23842",
+      "latitude": 45.8008,
+      "longitude": 9.29
     }
   ]
 }
