@@ -9,37 +9,47 @@ import pytest
 from sqlalchemy.orm import Session
 
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment
+from crossdock.excel_mapping import load_excel_column_mapping
 from crossdock.services.import_orders import ImportOrdersService
 from crossdock.services.locations import seed_location_coords
 from crossdock.storage.repositories import LocationCoordsRepository, OrderRepository
-from tests.fixtures.paths import june_carrier_load_fixture
+from tests.fixtures.paths import e2open_order_fixtures
+
+SEED_PATH = Path("config/location_coords_seed.json")
+MAPPING = Path("config/excel_column_mapping.json")
 
 
 def test_seed_location_coords_inserts_when_empty(db_session: Session) -> None:
-    seed_path = Path("config/location_coords_seed.json")
-    added = seed_location_coords(db_session, path=seed_path)
-    assert added >= 40
+    added = seed_location_coords(db_session, path=SEED_PATH)
+    assert added >= 100
     assert LocationCoordsRepository(db_session).count() == added
     # Second call is idempotent when not empty.
-    assert seed_location_coords(db_session, path=seed_path) == 0
+    assert seed_location_coords(db_session, path=SEED_PATH) == 0
 
 
-def test_june_fixture_import_gets_coordinates(db_session: Session) -> None:
-    fixture = Path("tests/fixtures/carrier_load_status1620780.xlsx")
-    if not fixture.is_file():
-        pytest.skip(f"Brak fixture czerwcowego: {fixture}")
-    seed_location_coords(db_session, path=Path("config/location_coords_seed.json"))
-    report = ImportOrdersService(db_session).import_path(
-        june_carrier_load_fixture(), username="tester"
+@pytest.mark.parametrize(
+    "fixture",
+    e2open_order_fixtures(),
+    ids=lambda path: path.name,
+)
+def test_e2open_fixture_import_gets_coordinates(db_session: Session, fixture: Path) -> None:
+    """Every pickup/delivery in the e2open fixtures must resolve from the seed."""
+    mapping = load_excel_column_mapping(MAPPING)
+    seed_location_coords(db_session, path=SEED_PATH)
+    report = ImportOrdersService(db_session, mapping=mapping, default_delivery_days=7).import_path(
+        fixture, username="tester"
     )
     assert report.accepted_count > 0
     orders = OrderRepository(db_session).list_all()
-    with_coords = [
-        o
+    missing = [
+        o.delivery_code
         for o in orders
-        if o.delivery_location.latitude is not None and o.delivery_location.longitude is not None
+        if o.delivery_location.latitude is None
+        or o.delivery_location.longitude is None
+        or o.pickup_location.latitude is None
+        or o.pickup_location.longitude is None
     ]
-    assert len(with_coords) == len(orders)
+    assert missing == []
 
 
 def test_enrich_existing_orders(db_session: Session) -> None:
