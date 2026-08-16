@@ -850,7 +850,7 @@ async def plans_page() -> None:
                             ui.aggrid(
                                 {
                                     "columnDefs": [
-                                        selection_column(multiple=False),
+                                        selection_column(multiple=True),
                                         {
                                             "headerName": "ID poj.",
                                             "field": "vehicle_id",
@@ -865,6 +865,12 @@ async def plans_page() -> None:
                                             "headerName": "Status",
                                             "field": "route_status_pl",
                                             "filter": True,
+                                        },
+                                        {
+                                            "headerName": "Do wysłania",
+                                            "field": "deadline_label",
+                                            "sortable": True,
+                                            "width": 118,
                                         },
                                         {
                                             "headerName": "Punkty rozładunku",
@@ -895,7 +901,7 @@ async def plans_page() -> None:
                                         },
                                     ],
                                     "rowData": [],
-                                    "rowSelection": "single",
+                                    "rowSelection": "multiple",
                                     "suppressRowClickSelection": True,
                                     "defaultColDef": {"sortable": True, "resizable": True},
                                     "domLayout": "normal",
@@ -912,13 +918,43 @@ async def plans_page() -> None:
                         )
                     fill_warn_label = ui.label("").classes("text-sm text-amber-800")
                     fill_warn_label.set_visibility(False)
-                    enlarge_routes_btn.on_click(
-                        attach_grid_enlarge(
-                            routes_grid,
-                            routes_host,
-                            title="Trasy",
-                            compact_height="200px",
-                        )
+                    route_action_dialog = ui.dialog().classes("cd-enlarge-dialog")
+                    with route_action_dialog, ui.card().classes("cd-enlarge-card"):
+                        with ui.row().classes("cd-enlarge-head w-full items-center justify-between"):
+                            ui.label("Trasy").classes("cd-enlarge-title")
+                            ui.button("Zamknij", icon="close", on_click=route_action_dialog.close).props(
+                                "flat no-caps"
+                            )
+                        with ui.row().classes("cd-toolbar w-full"):
+                            ui.button(
+                                "Zatwierdź trasę",
+                                icon="check_circle",
+                                on_click=lambda: on_approve_route(),
+                            ).props("color=positive outline")
+                            ui.button(
+                                "Zrealizowane",
+                                icon="done",
+                                on_click=lambda: on_complete_route(),
+                            ).props("color=positive")
+                            ui.button(
+                                "Odblokuj trasę",
+                                icon="lock_open",
+                                on_click=lambda: on_unlock_route(),
+                            ).props("outline")
+                        enlarge_route_host = ui.element("div").classes("cd-enlarge-host")
+
+                    def open_route_enlarge() -> None:
+                        routes_grid.move(enlarge_route_host)
+                        routes_grid.style("height: calc(85vh - 7.5rem); width: 100%")
+                        route_action_dialog.open()
+
+                    enlarge_routes_btn.on_click(open_route_enlarge)
+                    route_action_dialog.on(
+                        "hide",
+                        lambda *_args: (
+                            routes_grid.move(routes_host),
+                            routes_grid.style("height: 200px; width: 100%"),
+                        ),
                     )
 
                     riding_cols = [
@@ -1332,33 +1368,52 @@ async def plans_page() -> None:
                 type="positive" if unassigned == 0 and unrouted == 0 else "warning",
             )
 
-        async def _selected_route_vehicle_id() -> int | None:
+        async def _selected_route_vehicle_ids() -> list[int]:
             rows = await routes_grid.get_selected_rows()
-            if not rows:
-                return None
-            vid = rows[0].get("vehicle_id")
-            return int(vid) if vid is not None else None
+            ids: list[int] = []
+            for row in rows:
+                vid = row.get("vehicle_id")
+                if vid is not None:
+                    ids.append(int(vid))
+            return ids
 
         async def on_approve_route() -> None:
             run_id = ctx.get("latest_run_id")
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną trasę w tabeli.", type="warning")
                 return
-            try:
-                rid, n_orders, code = await run.io_bound(
-                    _approve_route_job, int(run_id), vehicle_id, username
+            results: list[tuple[int, int, str]] = []
+            errors: list[str] = []
+            for vehicle_id in vehicle_ids:
+                try:
+                    results.append(
+                        await run.io_bound(_approve_route_job, int(run_id), vehicle_id, username)
+                    )
+                except Exception as exc:
+                    errors.append(f"pojazd {vehicle_id}: {exc}")
+            if not results:
+                ui.notify("Nie udało się zatwierdzić żadnej trasy: " + "; ".join(errors), type="negative")
+                return
+            if len(results) == 1:
+                rid, n_orders, code = results[0]
+                ui.notify(
+                    f"Zatwierdzono trasę {code} (plan #{rid}, {n_orders} zleceń).",
+                    type="positive",
                 )
-            except Exception as exc:
-                ui.notify(f"Nie udało się zatwierdzić trasy: {exc}", type="negative")
-                return
-            ui.notify(
-                f"Zatwierdzono trasę {code} (plan #{rid}, {n_orders} zlecen).",
-                type="positive",
-            )
+            else:
+                display = ", ".join(code for _, _, code in results[:5])
+                if len(results) > 5:
+                    display += "..."
+                ui.notify(
+                    f"Zatwierdzono {len(results)} tras: {display}.",
+                    type="positive",
+                )
+            if errors:
+                ui.notify("Część tras nie została zatwierdzona: " + "; ".join(errors[:3]), type="warning")
             await refresh_plan_view()
 
         async def on_unlock_route() -> None:
@@ -1366,21 +1421,38 @@ async def plans_page() -> None:
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną trasę w tabeli.", type="warning")
                 return
-            try:
-                rid, n_orders, code = await run.io_bound(
-                    _unlock_route_job, int(run_id), vehicle_id, username
+            results: list[tuple[int, int, str]] = []
+            errors: list[str] = []
+            for vehicle_id in vehicle_ids:
+                try:
+                    results.append(
+                        await run.io_bound(_unlock_route_job, int(run_id), vehicle_id, username)
+                    )
+                except Exception as exc:
+                    errors.append(f"pojazd {vehicle_id}: {exc}")
+            if not results:
+                ui.notify("Nie udało się odblokować żadnej trasy: " + "; ".join(errors), type="negative")
+                return
+            if len(results) == 1:
+                rid, n_orders, code = results[0]
+                ui.notify(
+                    f"Odblokowano trasę {code} (plan #{rid}, {n_orders} zleceń wróciło do puli).",
+                    type="info",
                 )
-            except Exception as exc:
-                ui.notify(f"Nie udało się odblokować trasy: {exc}", type="negative")
-                return
-            ui.notify(
-                f"Odblokowano trasę {code} (plan #{rid}, {n_orders} zleceń wróciło do puli).",
-                type="info",
-            )
+            else:
+                display = ", ".join(code for _, _, code in results[:5])
+                if len(results) > 5:
+                    display += "..."
+                ui.notify(
+                    f"Odblokowano {len(results)} tras: {display}.",
+                    type="info",
+                )
+            if errors:
+                ui.notify("Część tras nie mogła zostać odblokowana: " + "; ".join(errors[:3]), type="warning")
             await refresh_plan_view()
 
         async def on_complete_route() -> None:
@@ -1388,21 +1460,38 @@ async def plans_page() -> None:
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz zatwierdzoną trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną zatwierdzoną trasę w tabeli.", type="warning")
                 return
-            try:
-                rid, n_orders, code = await run.io_bound(
-                    _complete_route_job, int(run_id), vehicle_id, username
+            results: list[tuple[int, int, str]] = []
+            errors: list[str] = []
+            for vehicle_id in vehicle_ids:
+                try:
+                    results.append(
+                        await run.io_bound(_complete_route_job, int(run_id), vehicle_id, username)
+                    )
+                except Exception as exc:
+                    errors.append(f"pojazd {vehicle_id}: {exc}")
+            if not results:
+                ui.notify("Nie udało się oznaczyć żadnej trasy: " + "; ".join(errors), type="negative")
+                return
+            if len(results) == 1:
+                rid, n_orders, code = results[0]
+                ui.notify(
+                    f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
+                    type="positive",
                 )
-            except Exception as exc:
-                ui.notify(f"Nie udało się oznaczyć trasy: {exc}", type="negative")
-                return
-            ui.notify(
-                f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
-                type="positive",
-            )
+            else:
+                display = ", ".join(code for _, _, code in results[:5])
+                if len(results) > 5:
+                    display += "..."
+                ui.notify(
+                    f"Zrealizowano {len(results)} tras: {display}.",
+                    type="positive",
+                )
+            if errors:
+                ui.notify("Część tras nie została oznaczona jako zrealizowana: " + "; ".join(errors[:3]), type="warning")
             await refresh_plan_view()
 
         async def on_approve() -> None:
