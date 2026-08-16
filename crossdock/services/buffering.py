@@ -79,30 +79,38 @@ def list_buffer_candidates(
     return candidates
 
 
+def compute_buffer_proposals(
+    session: Session, settings: Settings | None = None
+) -> BufferProposalBundle:
+    """Read-only FR-022 evaluation — no audit write (safe for page load / refresh)."""
+    settings = settings or get_settings()
+    candidates = list_buffer_candidates(session, settings)
+    decisions = decide_buffer(candidates, _rates_from_settings(settings))
+    buffer_count = sum(1 for d in decisions if d.action == "buffer")
+    return BufferProposalBundle(
+        decisions=decisions,
+        buffer_count=buffer_count,
+        ship_now_count=len(decisions) - buffer_count,
+    )
+
+
 def propose_buffering(
     session: Session,
     *,
     username: str,
     settings: Settings | None = None,
 ) -> BufferProposalBundle:
-    settings = settings or get_settings()
-    candidates = list_buffer_candidates(session, settings)
-    decisions = decide_buffer(candidates, _rates_from_settings(settings))
-    buffer_count = sum(1 for d in decisions if d.action == "buffer")
+    bundle = compute_buffer_proposals(session, settings)
     AuditLogRepository(session).record(
         username=username,
         action="buffering.propose",
         details={
-            "candidates": len(candidates),
-            "buffer": buffer_count,
-            "ship_now": len(decisions) - buffer_count,
+            "candidates": bundle.buffer_count + bundle.ship_now_count,
+            "buffer": bundle.buffer_count,
+            "ship_now": bundle.ship_now_count,
         },
     )
-    return BufferProposalBundle(
-        decisions=decisions,
-        buffer_count=buffer_count,
-        ship_now_count=len(decisions) - buffer_count,
-    )
+    return bundle
 
 
 def accept_buffer_proposals(
