@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,13 @@ from sqlalchemy.orm import Session
 from crossdock.config import Settings, get_settings
 from crossdock.services.backup import latest_backup
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository
+
+LOG_DIR = Path("data/logs")
+LOG_NAME_RE = re.compile(r"^crossdock_[A-Za-z0-9._-]+\.log$")
+LOG_TAIL_LINES = 30
+LOG_PREVIEW_LINES = 2000
+LOG_PREVIEW_BYTES = 256 * 1024
+LOG_FULL_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -32,6 +40,16 @@ class SystemStatus:
     last_backup_mtime: str | None
     last_backup_size_bytes: int | None
     log_tail: tuple[str, ...]
+    log_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LogFileView:
+    filename: str
+    lines: tuple[str, ...]
+    truncated: bool
+    bytes_read: int
+    file_size: int
 
 
 def collect_system_status(session: Session, settings: Settings | None = None) -> SystemStatus:
@@ -55,6 +73,7 @@ def collect_system_status(session: Session, settings: Settings | None = None) ->
         backup_mtime = datetime.fromtimestamp(backup.path.stat().st_mtime).isoformat(
             timespec="seconds"
         )
+    log_files = list_log_filenames(LOG_DIR)
 
     return SystemStatus(
         db_path=str(db_path.resolve()),
@@ -70,8 +89,54 @@ def collect_system_status(session: Session, settings: Settings | None = None) ->
         last_backup_path=str(backup.path) if backup else None,
         last_backup_mtime=backup_mtime,
         last_backup_size_bytes=backup.size_bytes if backup else None,
-        log_tail=_log_tail(Path("data/logs"), limit=30),
+        log_tail=_log_tail(LOG_DIR, limit=LOG_TAIL_LINES),
+        log_files=log_files,
     )
+
+
+def list_log_filenames(log_dir: Path | None = None) -> tuple[str, ...]:
+    directory = log_dir or LOG_DIR
+    if not directory.is_dir():
+        return ()
+    files = [
+        path
+        for path in directory.glob("crossdock_*.log")
+        if path.is_file() and LOG_NAME_RE.fullmatch(path.name)
+    ]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return tuple(path.name for path in files)
+
+
+def read_log_file(
+    filename: str,
+    *,
+    log_dir: Path | None = None,
+    max_bytes: int = LOG_PREVIEW_BYTES,
+    max_lines: int = LOG_PREVIEW_LINES,
+) -> LogFileView:
+    directory = (log_dir or LOG_DIR).resolve()
+    safe_name = _safe_log_filename(filename)
+    path = (directory / safe_name).resolve()
+    if not path.is_relative_to(directory) or not path.is_file():
+        raise ValueError("Nieprawidłowy plik logu.")
+    cap = min(max(1, max_bytes), LOG_FULL_BYTES)
+    lines, truncated, bytes_read = _read_tail_text(path, max_bytes=cap, max_lines=max_lines)
+    return LogFileView(
+        filename=safe_name,
+        lines=lines,
+        truncated=truncated,
+        bytes_read=bytes_read,
+        file_size=path.stat().st_size,
+    )
+
+
+def _safe_log_filename(filename: str) -> str:
+    name = Path(filename).name
+    if name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise ValueError("Nieprawidłowa nazwa pliku logu.")
+    if not LOG_NAME_RE.fullmatch(name):
+        raise ValueError("Nieprawidłowa nazwa pliku logu.")
+    return name
 
 
 def _last_import_from_audit(session: Session) -> str | None:
@@ -102,13 +167,34 @@ def _last_import_from_audit(session: Session) -> str | None:
 
 
 def _log_tail(log_dir: Path, *, limit: int) -> tuple[str, ...]:
-    if not log_dir.is_dir():
-        return ()
-    files = sorted(log_dir.glob("crossdock_*.log"), key=lambda p: p.stat().st_mtime)
+    files = list_log_filenames(log_dir)
     if not files:
         return ()
     try:
-        lines = files[-1].read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+        view = read_log_file(files[0], log_dir=log_dir, max_bytes=512_000, max_lines=limit)
+    except (OSError, ValueError):
         return ()
-    return tuple(lines[-limit:])
+    return view.lines
+
+
+def _read_tail_text(
+    path: Path, *, max_bytes: int, max_lines: int
+) -> tuple[tuple[str, ...], bool, int]:
+    size = path.stat().st_size
+    truncated = size > max_bytes
+    with path.open("rb") as handle:
+        if truncated:
+            handle.seek(size - max_bytes)
+            data = handle.read()
+            newline = data.find(b"\n")
+            if newline != -1:
+                data = data[newline + 1 :]
+        else:
+            data = handle.read()
+    bytes_read = len(data)
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        truncated = True
+        lines = lines[-max_lines:]
+    return tuple(lines), truncated, bytes_read

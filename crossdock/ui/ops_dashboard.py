@@ -26,9 +26,10 @@ def render_ops_focus_dashboard(
     *,
     on_enqueue_staying: Callable[[], Awaitable[Any] | Any],
     open_map: Callable[[], None],
+    on_select_plan: Callable[[int], Awaitable[Any] | Any] | None = None,
 ) -> None:
     """Paint the Ops Focus home layout inside an already-open page_frame."""
-    plan_title = f"Plan #{snap.latest_plan_id}" if snap.latest_plan_id is not None else "Brak planu"
+    plan_title = snap.plan_label or "Brak planu"
     plan_sub = (
         f"status: {snap.latest_plan_status_pl or '—'}"
         if snap.latest_plan_id is not None
@@ -45,6 +46,7 @@ def render_ops_focus_dashboard(
     import_txt = html.escape(snap.last_import_summary or "Brak danych w audycie.")
     plan_title_e = html.escape(plan_title)
     plan_sub_e = html.escape(plan_sub)
+    select_options = {str(run_id): label for run_id, label in snap.plan_options}
 
     ops_page_header(
         "Pulpit dyspozytora",
@@ -52,18 +54,32 @@ def render_ops_focus_dashboard(
     )
 
     with ui.element("div").classes("cd-ops-hero"):
-        ui.html(
-            "<div style='display:flex;justify-content:space-between;"
-            "gap:16px;align-items:flex-start;flex-wrap:wrap;'>"
-            "<div>"
-            "<p class='cd-ops-eyebrow'>Ostatni plan</p>"
-            f"<h2 class='cd-ops-plan-title'>{plan_title_e}</h2>"
-            f"<div class='cd-ops-plan-sub'>{plan_sub_e}</div>"
-            "</div>"
-            f"{pill}"
-            "</div>",
-            sanitize=False,
-        )
+        with ui.row().classes("w-full items-start justify-between flex-wrap gap-4"):
+            with ui.column().classes("gap-1").style("min-width:min(100%, 28rem);flex:1;"):
+                ui.label("Aktywny plan").classes("cd-ops-eyebrow")
+                if select_options:
+                    plan_select = ui.select(
+                        options=select_options,
+                        value=(
+                            str(snap.latest_plan_id) if snap.latest_plan_id is not None else None
+                        ),
+                        label="Plan",
+                    ).classes("w-full cd-ops-plan-title")
+
+                    async def _on_plan_change(_e: Any = None) -> None:
+                        raw = plan_select.value
+                        if raw is None or on_select_plan is None:
+                            return
+                        chosen = int(raw)
+                        if chosen == snap.latest_plan_id:
+                            return
+                        await on_select_plan(chosen)
+
+                    plan_select.on_value_change(_on_plan_change)
+                else:
+                    ui.html(f"<h2 class='cd-ops-plan-title'>{plan_title_e}</h2>", sanitize=False)
+                ui.html(f"<div class='cd-ops-plan-sub'>{plan_sub_e}</div>", sanitize=False)
+            ui.html(pill, sanitize=False)
         with ui.element("div").classes("cd-ops-tri"):
             _status_tile(
                 "Jedzie (trasy)",

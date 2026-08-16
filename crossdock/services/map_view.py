@@ -6,6 +6,7 @@ Pure presentation data for NiceGUI Leaflet — no solver, no UI imports.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -68,6 +69,8 @@ class MapPlanView:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     center: tuple[float, float] = (51.176, 4.836)
     zoom: int = 7
+    display_name: str | None = None
+    created_at: datetime | None = None
 
 
 class MapViewService:
@@ -178,6 +181,8 @@ class MapViewService:
             warnings=tuple(warnings),
             center=center,
             zoom=7 if len(vehicle_routes) > 1 else 8,
+            display_name=run.display_name,
+            created_at=run.created_at,
         )
 
     def build_latest(self) -> MapPlanView | None:

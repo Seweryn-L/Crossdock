@@ -192,13 +192,21 @@ class OrderRepository:
     def count(self) -> int:
         return len(self._session.scalars(select(OrderRow.id)).all())
 
-    def existing_delivery_codes(self, codes: list[str]) -> set[str]:
+    def existing_delivery_code_ids(self, codes: list[str]) -> dict[str, int]:
+        """Map delivery_code → first matching order id (cheap duplicate lookup)."""
         if not codes:
-            return set()
-        rows = self._session.scalars(
-            select(OrderRow.delivery_code).where(OrderRow.delivery_code.in_(codes))
+            return {}
+        rows = self._session.execute(
+            select(OrderRow.delivery_code, OrderRow.id).where(OrderRow.delivery_code.in_(codes))
         ).all()
-        return set(rows)
+        result: dict[str, int] = {}
+        for code, order_id in rows:
+            if code not in result:
+                result[code] = int(order_id)
+        return result
+
+    def existing_delivery_codes(self, codes: list[str]) -> set[str]:
+        return set(self.existing_delivery_code_ids(codes))
 
     def get_by_id(self, order_id: int) -> Order | None:
         row = self._session.scalar(
@@ -625,6 +633,30 @@ class AssignmentRepository:
         return self._session.scalar(
             select(AssignmentRunRow).order_by(AssignmentRunRow.id.desc()).limit(1)
         )
+
+    def resolve_run_id(self, preferred: int | None) -> int | None:
+        """Return preferred run if it exists, otherwise the latest run id."""
+        if preferred is not None:
+            run = self.get_run(preferred)
+            if run is not None:
+                return run.id
+        latest = self.get_latest_run()
+        return latest.id if latest else None
+
+    def list_recent_runs(self, *, limit: int = 30) -> list[AssignmentRunRow]:
+        return list(
+            self._session.scalars(
+                select(AssignmentRunRow).order_by(AssignmentRunRow.id.desc()).limit(limit)
+            ).all()
+        )
+
+    def set_display_name(self, run_id: int, display_name: str | None) -> AssignmentRunRow:
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        run.display_name = display_name
+        self._session.flush()
+        return run
 
     def get_latest_approved_run(self) -> AssignmentRunRow | None:
         return self._session.scalar(

@@ -125,6 +125,7 @@ class AssignmentRunRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     username: Mapped[str] = mapped_column(String(100))
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String(40))
     wall_time_s: Mapped[float]
     unassigned_count: Mapped[int]

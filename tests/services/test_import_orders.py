@@ -39,4 +39,8 @@ def test_reimport_skips_existing_delivery_codes(db_session: Session) -> None:
     second = service.import_path(fixture, username="tester")
     assert second.accepted_count == 0
     assert OrderRepository(db_session).count() == count_after_first
-    assert any("już w bazie" in msg for msg in second.warnings)
+    assert len(second.skipped_codes) == count_after_first
+    assert len(second.skipped_codes) > 10
+    assert not any("…" in msg and "już w bazie" in msg for msg in second.warnings)
+    assert {item.delivery_code for item in second.skipped} == set(second.skipped_codes)
+    assert all(item.existing_order_id is not None for item in second.skipped)

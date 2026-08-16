@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from io import BytesIO
 from typing import Any
 
@@ -44,6 +45,8 @@ class ReportBundle:
     utilization: tuple[UtilizationRow, ...]
     savings: SavingsSummary
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    display_name: str | None = None
+    created_at: datetime | None = None
 
 
 def build_report(
@@ -150,6 +153,8 @@ def build_report(
             ),
         ),
         warnings=tuple(warnings),
+        display_name=run.display_name,
+        created_at=run.created_at,
     )
 
 

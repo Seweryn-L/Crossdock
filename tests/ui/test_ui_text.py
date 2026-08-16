@@ -33,6 +33,10 @@ def test_polish_labels_are_intact() -> None:
     assert "wyświetlenia" in pages
     assert "Przesyłki" in pages
     assert "Zapełnienie" in pages
+    assert "Nowy plan" in pages
+    assert "Wynik importu" in pages
+    assert "Pokaż log" in pages
+    assert "Już w systemie" in pages
     assert "config/excel_column_mapping.json" not in pages
     assert "config/fleet_seed.json" not in pages
     assert "runtime_settings.json" not in pages
@@ -43,6 +47,29 @@ def test_polish_labels_are_intact() -> None:
     assert "Jedzie (trasy)" in dashboard
     assert "Zostaje w magazynie" in dashboard
     assert "Wszystkie zlecenia" in dashboard
+    assert "Aktywny plan" in dashboard
+
+
+def test_plan_label_format() -> None:
+    from datetime import datetime
+
+    from crossdock.text_pl import format_plan_label
+
+    stamp = datetime(2026, 8, 13, 14, 22)
+    named = format_plan_label(
+        run_id=3,
+        display_name="Tydzień 12-18.06",
+        plan_status="draft",
+        created_at=stamp,
+    )
+    assert named == "Tydzień 12-18.06 · #3 · roboczy · 13.08 14:22"
+    unnamed = format_plan_label(
+        run_id=3,
+        display_name=None,
+        plan_status="draft",
+        created_at=stamp,
+    )
+    assert unnamed == "Plan #3 · roboczy · 13.08 14:22"
 
 
 def test_ui_uses_self_hosted_inter_not_georgia() -> None:
@@ -98,3 +125,20 @@ def test_orders_hides_tutorial_copy() -> None:
     assert 'ui.label(\n                "Format: raport e2open' not in pages
     enlarge_calls = pages.count("attach_grid_enlarge(") + pages.count("enlarge_grid_button(")
     assert pages.count("ui.aggrid(") == enlarge_calls
+
+
+def test_plan_generation_keeps_sqlite_off_cpu_bound() -> None:
+    pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
+    assert "run.cpu_bound(solve_prepared_plan" in pages
+    assert "_run_plan_job" not in pages
+    assert "run.cpu_bound(_run_plan_job" not in pages
+
+
+def test_warehouse_does_not_propose_on_load() -> None:
+    pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
+    warehouse = pages.split("async def warehouse_page")[1].split("def _load_warehouse_view")[0]
+    tail = "\n".join(warehouse.rstrip().splitlines()[-6:])
+    assert "await refresh_all()" in tail
+    assert "await refresh_buffer()" not in tail
+    assert "compute_buffer_proposals" in pages
+    assert "propose_buffering" not in pages

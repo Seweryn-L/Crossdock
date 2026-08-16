@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
 from crossdock.storage.repositories import AssignmentRepository, VehicleRepository
-from crossdock.storage.tables import AssignmentItemRow
+from crossdock.storage.tables import AssignmentItemRow, AssignmentRunRow
+from crossdock.text_pl import format_plan_label
 from crossdock.text_pl import route_status_pl as _route_status_pl
 
 PlanBucket = Literal["riding", "staying", "attention"]
@@ -29,15 +31,23 @@ class PlanSummary:
     vehicles: int
     total_distance_km: float | None
     total_cost_eur: float | None
+    display_name: str | None = None
+    created_at: datetime | None = None
+
+    @property
+    def label(self) -> str:
+        return format_plan_label(
+            run_id=self.run_id,
+            display_name=self.display_name,
+            plan_status=self.plan_status,
+            created_at=self.created_at,
+        )
 
     def to_polish(self) -> str:
-        from crossdock.text_pl import plan_status_pl
-
         km = f"{self.total_distance_km:.0f} km" if self.total_distance_km is not None else "—"
         cost = f"{self.total_cost_eur:.0f} €" if self.total_cost_eur is not None else "—"
-        status = plan_status_pl(self.plan_status)
         return (
-            f"Plan #{self.run_id} ({status}): "
+            f"{self.label}: "
             f"jedzie {self.riding} zleceń / {self.vehicles} pojazdy · "
             f"{km} · {cost} · "
             f"zostaje w magazynie {self.staying} · "
@@ -67,7 +77,12 @@ def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucke
     return "attention", REASON_UNKNOWN
 
 
-def build_plan_view(session: Session, settings: Settings | None = None) -> PlanView:
+def build_plan_view(
+    session: Session,
+    settings: Settings | None = None,
+    *,
+    run_id: int | None = None,
+) -> PlanView:
     cfg = settings
     if cfg is None:
         try:
@@ -78,7 +93,7 @@ def build_plan_view(session: Session, settings: Settings | None = None) -> PlanV
 
     repo = AssignmentRepository(session)
     vehicles = VehicleRepository(session)
-    run = repo.get_latest_run()
+    run = _resolve_run(repo, run_id)
     if run is None:
         return PlanView(
             summary=None,
@@ -165,6 +180,8 @@ def build_plan_view(session: Session, settings: Settings | None = None) -> PlanV
         vehicles=vehicle_count,
         total_distance_km=run.total_distance_km,
         total_cost_eur=run.total_cost_eur,
+        display_name=run.display_name,
+        created_at=run.created_at,
     )
     return PlanView(
         summary=summary,
@@ -189,3 +206,11 @@ def _item_to_row(item: AssignmentItemRow, reason: str) -> dict[str, Any]:
         "fill_pct": (f"{item.fill_ratio * 100:.0f}%" if item.fill_ratio is not None else "—"),
         "reason": reason or "—",
     }
+
+
+def _resolve_run(repo: AssignmentRepository, run_id: int | None) -> AssignmentRunRow | None:
+    if run_id is not None:
+        run = repo.get_run(run_id)
+        if run is not None:
+            return run
+    return repo.get_latest_run()

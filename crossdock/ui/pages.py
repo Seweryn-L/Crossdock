@@ -19,9 +19,9 @@ from crossdock.services.app_settings import (
     save_runtime_overrides,
 )
 from crossdock.services.backup import run_backup
-from crossdock.services.buffering import accept_buffer_proposals, propose_buffering
+from crossdock.services.buffering import accept_buffer_proposals, compute_buffer_proposals
 from crossdock.services.dashboard import collect_dashboard
-from crossdock.services.import_orders import ImportOrdersService
+from crossdock.services.import_orders import ImportOrdersService, ImportOutcome
 from crossdock.services.locations import (
     apply_coords_to_existing_orders,
     delete_location,
@@ -39,9 +39,19 @@ from crossdock.services.orders import (
     update_approved_pallets,
 )
 from crossdock.services.plan_view import PlanView, build_plan_view
-from crossdock.services.planning import PlanningService
+from crossdock.services.planning import (
+    PlanningService,
+    PreparedPlanResult,
+    solve_prepared_plan,
+)
 from crossdock.services.reports import ReportBundle, build_report, export_report_xlsx
-from crossdock.services.system_status import collect_system_status
+from crossdock.services.system_status import (
+    LOG_FULL_BYTES,
+    LOG_PREVIEW_BYTES,
+    LOG_PREVIEW_LINES,
+    collect_system_status,
+    read_log_file,
+)
 from crossdock.services.warehouse_queue import (
     dequeue_order,
     enqueue_many,
@@ -58,7 +68,9 @@ from crossdock.storage.repositories import (
     VehicleRepository,
 )
 from crossdock.ui.labels import (
+    PLAN_NAME_MAX_LEN,
     buffer_action_pl,
+    format_plan_label,
     order_status_pl,
     plan_status_pl,
     queue_status_pl,
@@ -71,6 +83,22 @@ from crossdock.ui.widgets import (
     info_hint,
     selection_column,
 )
+
+
+def _active_run_id_from_storage() -> int | None:
+    raw = app.storage.user.get("active_run_id")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return None
+
+
+def _set_active_run_id(run_id: int | None) -> None:
+    if run_id is None:
+        app.storage.user.pop("active_run_id", None)
+    else:
+        app.storage.user["active_run_id"] = int(run_id)
 
 
 def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
@@ -115,13 +143,16 @@ def _delete_all_orders(username: str) -> int:
         return delete_all_orders(session, username=username)
 
 
-def _load_planning_context() -> dict[str, object]:
+def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, object]:
     with session_scope() as session:
         counts = order_counts(session)
         vehicle_repo = VehicleRepository(session)
         active_vehicles = vehicle_repo.list_active()
         available_vehicles = vehicle_repo.list_available()
-        latest = AssignmentRepository(session).get_latest_run()
+        planning = PlanningService(session)
+        resolved = planning.resolve_run_id(preferred_run_id)
+        run = AssignmentRepository(session).get_run(resolved) if resolved is not None else None
+        plans = planning.list_recent_plans(limit=30)
         busy = sum(1 for v in active_vehicles if v.is_busy)
         fleet_rows = [
             {
@@ -140,10 +171,23 @@ def _load_planning_context() -> dict[str, object]:
             "available_vehicles": len(available_vehicles),
             "busy_vehicles": busy,
             "fleet_rows": fleet_rows,
-            "plan_status": latest.plan_status if latest is not None else None,
-            "latest_run_id": latest.id if latest is not None else None,
-            "total_distance_km": latest.total_distance_km if latest else None,
-            "total_cost_eur": latest.total_cost_eur if latest else None,
+            "plan_status": run.plan_status if run is not None else None,
+            "latest_run_id": resolved,
+            "display_name": run.display_name if run is not None else None,
+            "created_at": run.created_at if run is not None else None,
+            "plan_label": (
+                format_plan_label(
+                    run_id=run.id,
+                    display_name=run.display_name,
+                    plan_status=run.plan_status,
+                    created_at=run.created_at,
+                )
+                if run is not None
+                else None
+            ),
+            "plan_options": [(item.run_id, item.label) for item in plans],
+            "total_distance_km": run.total_distance_km if run else None,
+            "total_cost_eur": run.total_cost_eur if run else None,
         }
 
 
@@ -163,12 +207,51 @@ def _unlock_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int,
         return outcome.run_id, len(outcome.reset_order_ids), outcome.vehicle_code or "?"
 
 
-def _import_upload(path: Path, username: str) -> tuple[int, int, list[str]]:
+def _import_upload(path: Path, username: str) -> ImportOutcome:
     with session_scope() as session:
-        report = ImportOrdersService(session).import_path(path, username=username)
-    messages = [f"Wiersz {e.row_number}: {e.message}" for e in report.rejected]
-    messages.extend(report.warnings)
-    return report.accepted_count, len(report.rejected), messages
+        return ImportOrdersService(session).import_path(path, username=username)
+
+
+def _open_import_result_dialog(outcome: ImportOutcome) -> None:
+    with (
+        ui.dialog() as dialog,
+        ui.card()
+        .classes("p-4 gap-3")
+        .style("min-width:min(92vw, 52rem);max-width:52rem;max-height:85vh;"),
+    ):
+        ui.label("Wynik importu").classes("text-lg font-medium")
+        ui.label(
+            f"Przyjęto {outcome.accepted_count} · "
+            f"pominięto (już w bazie) {len(outcome.skipped)} · "
+            f"błędy wierszy {len(outcome.rejected)}"
+        ).classes("text-sm text-gray-700")
+        if outcome.warnings:
+            for warning in outcome.warnings:
+                ui.label(warning).classes("text-sm text-amber-800")
+        if outcome.skipped:
+            ui.label("Już w systemie").classes("font-medium mt-2")
+            with (
+                ui.scroll_area().classes("w-full").style("max-height: 32vh"),
+                ui.column().classes("w-full gap-0"),
+            ):
+                for item in outcome.skipped:
+                    oid = (
+                        f" · zlecenie #{item.existing_order_id}"
+                        if item.existing_order_id is not None
+                        else ""
+                    )
+                    ui.label(f"{item.delivery_code}{oid}").classes("text-sm")
+        if outcome.rejected:
+            ui.label("Błędy wierszy").classes("font-medium mt-2")
+            with (
+                ui.scroll_area().classes("w-full").style("max-height: 32vh"),
+                ui.column().classes("w-full gap-0"),
+            ):
+                for err in outcome.rejected:
+                    ui.label(f"Wiersz {err.row_number}: {err.message}").classes("text-sm")
+        with ui.row().classes("gap-2 justify-end w-full"):
+            ui.button("Zamknij", on_click=dialog.close).props("color=primary")
+    dialog.open()
 
 
 def _load_last_import_summary() -> str | None:
@@ -176,14 +259,14 @@ def _load_last_import_summary() -> str | None:
         return collect_system_status(session).last_import_summary
 
 
-def _load_dashboard():
+def _load_dashboard(run_id: int | None = None):
     with session_scope() as session:
-        return collect_dashboard(session)
+        return collect_dashboard(session, run_id=run_id)
 
 
-def _load_latest_plan_view() -> PlanView:
+def _load_latest_plan_view(run_id: int | None = None) -> PlanView:
     with session_scope() as session:
-        return build_plan_view(session)
+        return build_plan_view(session, run_id=run_id)
 
 
 def _enqueue_staying_job(order_ids: list[int], username: str) -> int:
@@ -191,9 +274,19 @@ def _enqueue_staying_job(order_ids: list[int], username: str) -> int:
         return enqueue_many(session, order_ids=order_ids, username=username)
 
 
-def _run_plan_job(username: str) -> tuple[int, str, int, int, int, list[str]]:
+def _prepare_plan_job(target_run_id: int | None, force_new: bool = False):
     with session_scope() as session:
-        outcome = PlanningService(session).run_plan(username=username)
+        return PlanningService(session).prepare_plan_request(
+            target_run_id=target_run_id,
+            force_new=force_new,
+        )
+
+
+def _persist_plan_job(
+    prepared: PreparedPlanResult, username: str
+) -> tuple[int, str, int, int, int, list[str]]:
+    with session_scope() as session:
+        outcome = PlanningService(session).persist_prepared_plan(prepared, username=username)
     plan = outcome.plan
     return (
         outcome.run_id,
@@ -217,10 +310,23 @@ def _unlock_plan_job(run_id: int, username: str) -> tuple[int, int]:
     return outcome.run_id, len(outcome.reset_order_ids)
 
 
-def _delete_plan_job(run_id: int, username: str) -> tuple[int, int]:
+def _delete_plan_job(run_id: int, username: str) -> tuple[int, int, int | None]:
     with session_scope() as session:
         outcome = PlanningService(session).delete_plan(run_id=run_id, username=username)
-    return outcome.run_id, len(outcome.reset_order_ids)
+        remaining = PlanningService(session).resolve_run_id(None)
+    return outcome.run_id, len(outcome.reset_order_ids), remaining
+
+
+def _rename_plan_job(run_id: int, display_name: str, username: str) -> str | None:
+    with session_scope() as session:
+        return PlanningService(session).rename_plan(
+            run_id=run_id, display_name=display_name, username=username
+        )
+
+
+def _create_empty_plan_job(username: str) -> int:
+    with session_scope() as session:
+        return PlanningService(session).create_empty_plan(username=username)
 
 
 def _update_pallets_job(order_id: int, total: int, username: str):
@@ -233,35 +339,51 @@ def _update_pallets_job(order_id: int, total: int, username: str):
 @ui.page("/")
 async def dashboard_page() -> None:
     with page_frame("Pulpit"):
-        snap = await run.io_bound(_load_dashboard)
+        host = ui.column().classes("w-full gap-4")
         username = app.storage.user.get("username", "unknown")
 
-        async def on_enqueue_staying() -> None:
-            ids = list(snap.staying_order_ids)
-            if not ids:
-                ui.notify("Brak zleceń do dodania do kolejki.", type="info")
-                return
-            added = await run.io_bound(_enqueue_staying_job, ids, username)
-            ui.notify(
-                f"Dodano do kolejki: {added}."
-                if added
-                else "Nic nie dodano (już w kolejce lub inny status).",
-                type="positive" if added else "info",
-            )
+        async def refresh_dashboard() -> None:
+            preferred = _active_run_id_from_storage()
+            snap = await run.io_bound(_load_dashboard, preferred)
+            _set_active_run_id(snap.latest_plan_id)
 
-        def open_map() -> None:
-            if snap.latest_plan_id is None:
-                ui.navigate.to("/map")
-            else:
-                ui.navigate.to(f"/map?run_id={snap.latest_plan_id}")
+            async def on_enqueue_staying() -> None:
+                ids = list(snap.staying_order_ids)
+                if not ids:
+                    ui.notify("Brak zleceń do dodania do kolejki.", type="info")
+                    return
+                added = await run.io_bound(_enqueue_staying_job, ids, username)
+                ui.notify(
+                    f"Dodano do kolejki: {added}."
+                    if added
+                    else "Nic nie dodano (już w kolejce lub inny status).",
+                    type="positive" if added else "info",
+                )
 
-        from crossdock.ui.ops_dashboard import render_ops_focus_dashboard
+            def open_map() -> None:
+                if snap.latest_plan_id is None:
+                    ui.navigate.to("/map")
+                else:
+                    ui.navigate.to(f"/map?run_id={snap.latest_plan_id}")
 
-        render_ops_focus_dashboard(
-            snap,
-            on_enqueue_staying=on_enqueue_staying,
-            open_map=open_map,
-        )
+            async def on_select_plan(run_id: int) -> None:
+                if run_id == snap.latest_plan_id:
+                    return
+                _set_active_run_id(run_id)
+                await refresh_dashboard()
+
+            host.clear()
+            with host:
+                from crossdock.ui.ops_dashboard import render_ops_focus_dashboard
+
+                render_ops_focus_dashboard(
+                    snap,
+                    on_enqueue_staying=on_enqueue_staying,
+                    open_map=open_map,
+                    on_select_plan=on_select_plan,
+                )
+
+        await refresh_dashboard()
 
 
 @ui.page("/orders")
@@ -279,6 +401,7 @@ async def orders_page() -> None:
             with ui.element("div").classes(f"w-full {tone}"):
                 ui.label(
                     f"Ostatni import (sesja): przyjęto {session_import.get('accepted', 0)}, "
+                    f"pominięto {session_import.get('skipped', 0)}, "
                     f"odrzucono {session_import.get('rejected', 0)} "
                     f"({session_import.get('at', '')})."
                 ).classes("text-sm text-gray-700")
@@ -287,8 +410,6 @@ async def orders_page() -> None:
             if last_import:
                 with ui.element("div").classes("w-full cd-ops-hero"):
                     ui.label(f"Ostatni import: {last_import}").classes("text-sm text-gray-700")
-
-        error_box = ui.column().classes("w-full gap-1")
 
         with ui.element("div").classes("cd-ops-panel w-full gap-3"):
             status_label = ui.label("").classes("text-sm text-gray-700 font-medium")
@@ -399,7 +520,6 @@ async def orders_page() -> None:
             await sync_toolbar(counts)
 
         async def handle_upload(e: ui.events.UploadEventArguments) -> None:
-            error_box.clear()
             settings = get_settings()
             content = await e.file.read()
             max_bytes = settings.upload_max_mb * 1024 * 1024
@@ -411,7 +531,7 @@ async def orders_page() -> None:
                 return
             suffix = Path(e.file.name or "upload.xlsx").suffix or ".xlsx"
 
-            def _write_and_import() -> tuple[int, int, list[str]]:
+            def _write_and_import() -> ImportOutcome:
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp.write(content)
                     tmp_path = Path(tmp.name)
@@ -420,21 +540,23 @@ async def orders_page() -> None:
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
-            accepted, rejected, messages = await run.io_bound(_write_and_import)
+            outcome = await run.io_bound(_write_and_import)
+            skipped_n = len(outcome.skipped)
+            rejected_n = len(outcome.rejected)
             app.storage.user["last_import"] = {
-                "accepted": accepted,
-                "rejected": rejected,
+                "accepted": outcome.accepted_count,
+                "rejected": rejected_n,
+                "skipped": skipped_n,
                 "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            toast_type = "positive" if rejected_n == 0 and skipped_n == 0 else "warning"
             ui.notify(
-                f"Import zakończony: przyjęto {accepted} zleceń, odrzucono {rejected} wierszy.",
-                type="positive" if rejected == 0 else "warning",
+                f"Przyjęto {outcome.accepted_count}, pominięto {skipped_n}, błędy {rejected_n}",
+                type=toast_type,
             )
-            with error_box:
-                for msg in messages[:50]:
-                    ui.label(msg).classes("text-sm text-red-600")
+            if skipped_n > 0 or rejected_n > 0 or outcome.warnings:
+                _open_import_result_dialog(outcome)
             await refresh_grid()
-            ui.navigate.to("/orders")
 
         async def on_delete_selected() -> None:
             selected = await grid.get_selected_rows()
@@ -539,8 +661,11 @@ async def plans_page() -> None:
             "Zatwierdzaj pojedyncze trasy — zajęty pojazd wypada z kolejnych generacji.",
         )
 
-        ctx = await run.io_bound(_load_planning_context)
+        ctx = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
+        active_id = ctx.get("latest_run_id")
+        _set_active_run_id(int(active_id) if isinstance(active_id, int) else None)
         staying_ids: list[int] = []
+        updating_plan_select = False
 
         def _plan_chip(caption: str, *, muted: bool = False) -> tuple[ui.element, ui.label]:
             cls = "cd-plan-chip cd-plan-chip-muted" if muted else "cd-plan-chip"
@@ -573,6 +698,17 @@ async def plans_page() -> None:
 
         with ui.element("div").classes("cd-ops-panel w-full"):
             with ui.row().classes("cd-toolbar w-full"):
+                plan_select = (
+                    ui.select(
+                        options={},
+                        value=None,
+                        label="Plan",
+                    )
+                    .classes("min-w-[22rem]")
+                    .props("dense options-dense")
+                )
+                rename_btn = ui.button("Nazwa", icon="edit").props("outline")
+                new_plan_btn = ui.button("Nowy plan", icon="note_add").props("outline")
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
                 generate_btn = ui.button("Generuj plan", icon="auto_awesome").props("color=primary")
                 approve_btn = ui.button("Zatwierdź wszystkie trasy", icon="done_all").props(
@@ -818,6 +954,7 @@ async def plans_page() -> None:
                             )
 
         async def sync_planning_state(ctx_now: dict[str, object], result_text: str = "") -> None:
+            nonlocal updating_plan_select
             fleet_list.clear()
             with fleet_list:
                 rows = list(ctx_now.get("fleet_rows") or [])
@@ -860,10 +997,15 @@ async def plans_page() -> None:
             else:
                 empty_wrap.set_visibility(False)
                 plan_wrap.set_visibility(True)
-                chip_plan.set_text(
-                    f"#{run_id} · {plan_status_pl(str(ctx_now.get('plan_status') or ''))}"
-                )
+                chip_plan.set_text(str(ctx_now.get("plan_label") or f"Plan #{run_id}"))
             plan_status = ctx_now.get("plan_status")
+            options = {
+                str(item[0]): str(item[1])
+                for item in (ctx_now.get("plan_options") or [])  # type: ignore[union-attr]
+            }
+            updating_plan_select = True
+            plan_select.set_options(options, value=str(run_id) if run_id is not None else None)
+            updating_plan_select = False
             blockers: list[str] = []
             can_generate = True
             if int(ctx_now["eligible_orders"]) == 0:  # type: ignore[arg-type]
@@ -892,19 +1034,27 @@ async def plans_page() -> None:
                 unlock_btn.enable()
                 delete_plan_btn.enable()
                 map_btn.enable()
+                rename_btn.enable()
             else:
                 unlock_route_btn.disable()
                 unlock_btn.disable()
                 delete_plan_btn.disable()
                 map_btn.disable()
+                rename_btn.disable()
             if result_text:
                 result_label.set_text(result_text)
                 result_label.set_visibility(True)
 
         async def refresh_plan_view() -> None:
             nonlocal ctx, staying_ids
-            ctx = await run.io_bound(_load_planning_context)
-            view = await run.io_bound(_load_latest_plan_view)
+            preferred = _active_run_id_from_storage()
+            ctx = await run.io_bound(_load_planning_context, preferred)
+            resolved = ctx.get("latest_run_id")
+            _set_active_run_id(int(resolved) if isinstance(resolved, int) else None)
+            view = await run.io_bound(
+                _load_latest_plan_view,
+                int(resolved) if isinstance(resolved, int) else None,
+            )
             if view.summary is None:
                 staying_ids = []
                 enqueue_staying_btn.disable()
@@ -923,9 +1073,7 @@ async def plans_page() -> None:
                     enqueue_staying_btn.disable()
                 empty_wrap.set_visibility(False)
                 plan_wrap.set_visibility(True)
-                chip_plan.set_text(
-                    f"#{view.summary.run_id} · {plan_status_pl(view.summary.plan_status)}"
-                )
+                chip_plan.set_text(view.summary.label)
                 riding_wrap.set_visibility(True)
                 staying_wrap.set_visibility(True)
                 attention_wrap.set_visibility(True)
@@ -980,7 +1128,8 @@ async def plans_page() -> None:
             ui.navigate.to("/warehouse")
 
         async def on_generate() -> None:
-            ctx_now = await run.io_bound(_load_planning_context)
+            preferred = _active_run_id_from_storage()
+            ctx_now = await run.io_bound(_load_planning_context, preferred)
             if (
                 int(ctx_now["eligible_orders"]) == 0  # type: ignore[arg-type]
                 or int(ctx_now["available_vehicles"]) == 0  # type: ignore[arg-type]
@@ -996,7 +1145,11 @@ async def plans_page() -> None:
             result_label.set_visibility(True)
             generate_btn.disable()
             approve_btn.disable()
+            target = ctx_now.get("latest_run_id")
+            target_id = int(target) if isinstance(target, int) else None
             try:
+                request = await run.io_bound(_prepare_plan_job, target_id, False)
+                prepared = await run.cpu_bound(solve_prepared_plan, request)
                 (
                     run_id,
                     _status,
@@ -1004,11 +1157,12 @@ async def plans_page() -> None:
                     unassigned,
                     unrouted,
                     warnings,
-                ) = await run.cpu_bound(_run_plan_job, username)
+                ) = await run.io_bound(_persist_plan_job, prepared, username)
             except Exception as exc:
                 await refresh_plan_view()
                 ui.notify(str(exc), type="negative")
                 return
+            _set_active_run_id(run_id)
             await refresh_plan_view()
             result_label.set_text(
                 f"Plan #{run_id} · jedzie={planned} · "
@@ -1075,7 +1229,7 @@ async def plans_page() -> None:
             await refresh_plan_view()
 
         async def on_approve() -> None:
-            ctx_now = await run.io_bound(_load_planning_context)
+            ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None or ctx_now.get("plan_status") not in {"draft", "partial"}:
                 ui.notify("Brak propozycji tras do zatwierdzenia.", type="warning")
@@ -1097,7 +1251,7 @@ async def plans_page() -> None:
             )
 
         async def on_unlock() -> None:
-            ctx_now = await run.io_bound(_load_planning_context)
+            ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None or ctx_now.get("plan_status") not in {"approved", "partial"}:
                 ui.notify("Odblokować można plan częściowy lub zatwierdzony.", type="warning")
@@ -1119,7 +1273,7 @@ async def plans_page() -> None:
             )
 
         async def on_delete_plan() -> None:
-            ctx_now = await run.io_bound(_load_planning_context)
+            ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None:
                 ui.notify("Brak planu do usunięcia.", type="warning")
@@ -1134,7 +1288,7 @@ async def plans_page() -> None:
                     async def confirm() -> None:
                         dialog.close()
                         try:
-                            deleted_run, count = await run.io_bound(
+                            deleted_run, count, remaining = await run.io_bound(
                                 _delete_plan_job,
                                 int(run_id),  # type: ignore[arg-type]
                                 username,
@@ -1143,6 +1297,7 @@ async def plans_page() -> None:
                             await refresh_plan_view()
                             ui.notify(str(exc), type="negative")
                             return
+                        _set_active_run_id(remaining)
                         await refresh_plan_view()
                         ui.notify(
                             f"Usunięto plan #{deleted_run}: {count} zleceń → nowe.",
@@ -1153,13 +1308,72 @@ async def plans_page() -> None:
             dialog.open()
 
         async def on_show_map() -> None:
-            ctx_now = await run.io_bound(_load_planning_context)
+            ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None:
                 ui.notify("Brak planu do wyświetlenia na mapie.", type="warning")
                 return
             ui.navigate.to(f"/map?run_id={int(run_id)}")  # type: ignore[arg-type]
 
+        async def on_plan_select(_e: object = None) -> None:
+            if updating_plan_select:
+                return
+            raw = plan_select.value
+            if raw is None:
+                return
+            chosen = int(raw)
+            if chosen == ctx.get("latest_run_id"):
+                return
+            _set_active_run_id(chosen)
+            await refresh_plan_view()
+
+        async def on_rename_plan() -> None:
+            run_id = ctx.get("latest_run_id")
+            if run_id is None:
+                ui.notify("Brak planu do nazwania.", type="warning")
+                return
+            current = str(ctx.get("display_name") or "")
+            with ui.dialog() as dialog, ui.card().classes("p-4 gap-3 min-w-[320px]"):
+                ui.label("Nazwa planu").classes("font-medium")
+                name_in = ui.input(value=current).props(f"maxlength={PLAN_NAME_MAX_LEN}")
+                name_in.classes("w-full")
+
+                async def save_name() -> None:
+                    try:
+                        stored = await run.io_bound(
+                            _rename_plan_job,
+                            int(run_id),
+                            str(name_in.value or ""),
+                            username,
+                        )
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+                        return
+                    dialog.close()
+                    ui.notify(
+                        f"Zapisano nazwę: {stored}" if stored else "Usunięto nazwę planu.",
+                        type="positive",
+                    )
+                    await refresh_plan_view()
+
+                with ui.row().classes("gap-2 justify-end w-full"):
+                    ui.button("Anuluj", on_click=dialog.close).props("flat")
+                    ui.button("Zapisz", on_click=save_name).props("color=primary")
+            dialog.open()
+
+        async def on_new_plan() -> None:
+            try:
+                new_id = await run.io_bound(_create_empty_plan_job, username)
+            except Exception as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            _set_active_run_id(new_id)
+            await refresh_plan_view()
+            ui.notify(f"Utworzono nowy plan #{new_id}.", type="positive")
+
+        plan_select.on_value_change(on_plan_select)
+        rename_btn.on_click(on_rename_plan)
+        new_plan_btn.on_click(on_new_plan)
         refresh_btn.on_click(refresh_plan_view)
         generate_btn.on_click(on_generate)
         approve_btn.on_click(on_approve)
@@ -1172,12 +1386,17 @@ async def plans_page() -> None:
         await refresh_plan_view()
 
 
-def _load_map_view(run_id: int | None) -> MapPlanView | None:
+def _load_map_view(run_id: int | None, require_exact: bool = False) -> MapPlanView | None:
     with session_scope() as session:
         service = MapViewService(session)
-        if run_id is not None:
+        if require_exact:
+            if run_id is None:
+                return None
             return service.build_for_run(run_id)
-        return service.build_latest()
+        resolved = PlanningService(session).resolve_run_id(run_id)
+        if resolved is None:
+            return None
+        return service.build_for_run(resolved)
 
 
 @ui.page("/map")
@@ -1185,10 +1404,12 @@ async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
         ops_page_header(
             "Mapa",
-            "Trasy ostatniego planu. Linie łączą magazyn z punktami rozładunku; "
+            "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku; "
             "strzałki pokazują kierunek jazdy.",
         )
-        view = await run.io_bound(_load_map_view, run_id)
+        chosen_explicit = run_id is not None
+        chosen = run_id if chosen_explicit else _active_run_id_from_storage()
+        view = await run.io_bound(_load_map_view, chosen, chosen_explicit)
         if view is None:
             with ui.element("div").classes("cd-ops-panel w-full"):
                 ui.label("Brak planu do wyświetlenia.").classes("font-bold text-lg")
@@ -1200,8 +1421,13 @@ async def map_page(run_id: int | None = None) -> None:
 
         with ui.element("div").classes("cd-ops-panel w-full"):
             ui.label(
-                f"Plan #{view.run_id} · {plan_status_pl(view.plan_status)} · "
-                f"pojazdów na mapie: {len(view.routes)}"
+                format_plan_label(
+                    run_id=view.run_id,
+                    display_name=view.display_name,
+                    plan_status=view.plan_status,
+                    created_at=view.created_at,
+                )
+                + f" · pojazdów na mapie: {len(view.routes)}"
             ).classes("font-medium")
 
         with ui.row().classes("w-full gap-4 items-start flex-wrap"):
@@ -1335,16 +1561,21 @@ async def reports_page() -> None:
             )
 
         async def refresh_report() -> None:
-            bundle = await run.io_bound(_load_report)
+            bundle = await run.io_bound(_load_report, _active_run_id_from_storage())
             if bundle is None:
                 summary.set_text("Brak planu do raportu.")
                 util_grid.options["rowData"] = []
                 util_grid.update()
                 return
             sav = bundle.savings
+            label = format_plan_label(
+                run_id=bundle.run_id,
+                display_name=bundle.display_name,
+                plan_status=bundle.plan_status,
+                created_at=bundle.created_at,
+            )
             summary.set_text(
-                f"Plan #{bundle.run_id} ({plan_status_pl(bundle.plan_status)}) · "
-                f"oszczędność {sav.savings_eur:.0f} € ({sav.savings_pct:.0f}%)"
+                f"{label} · oszczędność {sav.savings_eur:.0f} € ({sav.savings_pct:.0f}%)"
             )
             util_grid.options["rowData"] = [
                 {
@@ -1360,7 +1591,7 @@ async def reports_page() -> None:
             util_grid.update()
 
         async def on_download() -> None:
-            data = await run.io_bound(_export_report_bytes)
+            data = await run.io_bound(_export_report_bytes, _active_run_id_from_storage())
             if data is None:
                 ui.notify("Brak raportu do pobrania.", type="warning")
                 return
@@ -1378,14 +1609,20 @@ async def reports_page() -> None:
         await refresh_report()
 
 
-def _load_report() -> ReportBundle | None:
+def _load_report(run_id: int | None = None) -> ReportBundle | None:
     with session_scope() as session:
-        return build_report(session)
+        resolved = PlanningService(session).resolve_run_id(run_id)
+        if resolved is None:
+            return None
+        return build_report(session, run_id=resolved)
 
 
-def _export_report_bytes() -> bytes | None:
+def _export_report_bytes(run_id: int | None = None) -> bytes | None:
     with session_scope() as session:
-        bundle = build_report(session)
+        resolved = PlanningService(session).resolve_run_id(run_id)
+        if resolved is None:
+            return None
+        bundle = build_report(session, run_id=resolved)
         if bundle is None:
             return None
         return export_report_xlsx(bundle)
@@ -1484,7 +1721,11 @@ async def warehouse_page() -> None:
         ).classes("text-sm text-gray-500")
 
         async def refresh_all() -> None:
-            candidates, entries = await run.io_bound(_load_warehouse_view)
+            try:
+                candidates, entries = await run.io_bound(_load_warehouse_view)
+            except Exception as exc:
+                ui.notify(f"Nie udało się wczytać kolejki: {exc}", type="negative")
+                return
             candidates_grid.options["rowData"] = [
                 {
                     "order_id": e.order_id,
@@ -1580,7 +1821,9 @@ async def warehouse_page() -> None:
             enlarge_buffer_btn = ui.button("Powiększ", icon="open_in_full").props(
                 "flat dense no-caps"
             )
-        buffer_summary = ui.label("").classes("text-sm text-gray-700")
+        buffer_summary = ui.label(
+            "Kliknij „Odśwież propozycję”, aby policzyć buforowanie kosztowe."
+        ).classes("text-sm text-gray-700")
         buffer_decisions: dict[int, object] = {}
         buffer_host = ui.element("div").classes("cd-grid-host")
         with buffer_host:
@@ -1616,7 +1859,7 @@ async def warehouse_page() -> None:
         async def refresh_buffer() -> None:
             nonlocal buffer_decisions
             try:
-                bundle = await run.io_bound(_propose_buffer_job, username)
+                bundle = await run.io_bound(_propose_buffer_job)
             except Exception as exc:
                 ui.notify(f"Błąd propozycji: {exc}", type="negative")
                 return
@@ -1662,7 +1905,6 @@ async def warehouse_page() -> None:
             )
 
         await refresh_all()
-        await refresh_buffer()
 
 
 def _load_warehouse_view():
@@ -1670,9 +1912,9 @@ def _load_warehouse_view():
         return list_enqueue_candidates(session), list_queue(session)
 
 
-def _propose_buffer_job(username: str):
+def _propose_buffer_job():
     with session_scope() as session:
-        return propose_buffering(session, username=username)
+        return compute_buffer_proposals(session)
 
 
 def _accept_buffer_job(order_ids: list[int], decisions_by_id: dict, username: str) -> int:
@@ -1720,6 +1962,10 @@ def _load_system_status():
         return collect_system_status(session)
 
 
+def _read_log_job(filename: str, max_bytes: int, max_lines: int):
+    return read_log_file(filename, max_bytes=max_bytes, max_lines=max_lines)
+
+
 def _run_backup_job():
     return run_backup()
 
@@ -1733,6 +1979,15 @@ async def system_page() -> None:
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Stan systemu").classes("font-bold")
+        with ui.row().classes("cd-toolbar"):
+            refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
+            backup_btn = ui.button("Utwórz kopię teraz", icon="backup").props("color=primary")
+            log_select = (
+                ui.select(options={}, value=None, label="Plik logu")
+                .classes("min-w-[16rem]")
+                .props("dense options-dense")
+            )
+            show_log_btn = ui.button("Pokaż log", icon="article").props("outline")
         status_box = ui.column().classes("w-full gap-2")
         log_box = ui.column().classes("w-full gap-1 font-mono text-xs")
 
@@ -1769,10 +2024,62 @@ async def system_page() -> None:
                     ).classes("text-sm")
                 else:
                     ui.label("Ostatnia kopia: brak").classes("text-sm")
+            files = list(st.log_files)
+            if files:
+                log_select.set_options({name: name for name in files}, value=files[0])
+                log_select.enable()
+                show_log_btn.enable()
+            else:
+                log_select.set_options({"_none": "Brak plików logów"}, value="_none")
+                log_select.disable()
+                show_log_btn.disable()
             with log_box:
-                ui.label("Ogon logu:").classes("text-sm font-medium font-sans")
-                for line in st.log_tail or ("(brak plików logów)",):
-                    ui.label(line)
+                ui.label("Ogon logu (najnowszy plik):").classes("text-sm font-medium font-sans")
+                if st.log_tail:
+                    for line in st.log_tail:
+                        ui.label(line)
+                else:
+                    ui.label("Brak plików logów").classes("font-sans")
+
+        async def _open_log_dialog(*, more: bool) -> None:
+            filename = log_select.value
+            if not filename or filename == "_none":
+                ui.notify("Brak plików logów.", type="info")
+                return
+            max_bytes = LOG_FULL_BYTES if more else LOG_PREVIEW_BYTES
+            max_lines = 80_000 if more else LOG_PREVIEW_LINES
+            try:
+                view = await run.io_bound(_read_log_job, str(filename), max_bytes, max_lines)
+            except Exception as exc:
+                ui.notify(f"Nie udało się odczytać logu: {exc}", type="negative")
+                return
+            with (
+                ui.dialog() as dialog,
+                ui.card()
+                .classes("p-4 gap-2")
+                .style("width:90vw;height:85vh;max-width:90vw;display:flex;flex-direction:column;"),
+            ):
+                ui.label(view.filename).classes("font-medium")
+                if view.truncated:
+                    ui.label("Pokazano ogon pliku — treść ucięta (limit odczytu).").classes(
+                        "text-sm text-amber-800"
+                    )
+                body = "\n".join(view.lines) if view.lines else "(pusty plik)"
+                with ui.scroll_area().classes("w-full").style("flex:1;min-height:0;"):
+                    ui.code(body).classes("w-full font-mono text-xs")
+                with ui.row().classes("gap-2 justify-end w-full"):
+                    if view.truncated and not more:
+
+                        async def load_more() -> None:
+                            dialog.close()
+                            await _open_log_dialog(more=True)
+
+                        ui.button("Wczytaj więcej", on_click=load_more).props("outline")
+                    ui.button("Zamknij", on_click=dialog.close).props("color=primary")
+            dialog.open()
+
+        async def on_show_log() -> None:
+            await _open_log_dialog(more=False)
 
         async def on_backup_now() -> None:
             try:
@@ -1786,11 +2093,9 @@ async def system_page() -> None:
             )
             await refresh_status()
 
-        with ui.row().classes("cd-toolbar"):
-            ui.button("Odśwież", icon="refresh", on_click=refresh_status).props("outline")
-            ui.button("Utwórz kopię teraz", icon="backup", on_click=on_backup_now).props(
-                "color=primary"
-            )
+        refresh_btn.on_click(refresh_status)
+        backup_btn.on_click(on_backup_now)
+        show_log_btn.on_click(on_show_log)
         await refresh_status()
 
 

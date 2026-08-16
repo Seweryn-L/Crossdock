@@ -164,7 +164,7 @@ def test_approve_plan_sets_approved_and_blocks_second(db_session: Session) -> No
     with pytest.raises(ValueError, match="już zatwierdzony"):
         service.approve_plan(run_id=plan.run_id, username="approver")
 
-    with pytest.raises(ValueError, match="zatwierdzony"):
+    with pytest.raises(ValueError, match="wolnych pojazdów"):
         service.run_plan(username="tester")
 
 
@@ -192,6 +192,22 @@ def test_unlock_plan_allows_regenerate(db_session: Session) -> None:
     again = service.run_plan(username="tester")
     assert again.run_id == plan.run_id
     assert len(again.planned_order_ids) >= 1
+
+
+def test_prepare_plan_request_does_not_delete_existing_items(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    before = AssignmentRepository(db_session).list_items_for_run(plan.run_id)
+    assert before
+
+    request = service.prepare_plan_request()
+    after = AssignmentRepository(db_session).list_items_for_run(plan.run_id)
+    assert len(after) == len(before)
+    assert request.existing_run_id == plan.run_id
+    assert {o.id for o in request.solver_orders} == {item.order_id for item in before}
 
 
 def test_delete_plan_allows_regenerate(db_session: Session) -> None:
@@ -292,3 +308,72 @@ def test_approve_route_marks_vehicle_busy_and_unlocks(db_session: Session) -> No
     assert vehicle is not None
     assert vehicle.is_busy is False
     assert VehicleRepository(db_session).list_available()
+
+
+def test_rename_and_list_recent_plans(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+
+    listed = service.list_recent_plans()
+    assert listed
+    assert listed[0].run_id == plan.run_id
+    assert listed[0].display_name is None
+    assert listed[0].label.startswith("Plan #")
+    assert "roboczy" in listed[0].label
+
+    stored = service.rename_plan(
+        run_id=plan.run_id, display_name="  Tydzień 12-18.06  ", username="tester"
+    )
+    assert stored == "Tydzień 12-18.06"
+    with pytest.raises(ValueError, match="80"):
+        service.rename_plan(run_id=plan.run_id, display_name="x" * 81, username="tester")
+    renamed = service.list_recent_plans()[0]
+    assert renamed.display_name == "Tydzień 12-18.06"
+    assert renamed.label.startswith("Tydzień 12-18.06 · #")
+    assert f"#{plan.run_id}" in renamed.label
+
+    cleared = service.rename_plan(run_id=plan.run_id, display_name="   ", username="tester")
+    assert cleared is None
+    assert service.list_recent_plans()[0].display_name is None
+
+
+def test_generate_on_approved_creates_new_run(db_session: Session) -> None:
+    _add_vehicle(db_session, code="T1")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=_settings())
+    first = service.run_plan(username="tester")
+    service.approve_plan(run_id=first.run_id, username="approver")
+    approved_items = {
+        item.order_id for item in AssignmentRepository(db_session).list_items_for_run(first.run_id)
+    }
+
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="C", weight=1800, lat=51.92, lon=4.48)
+    second = service.run_plan(username="tester", target_run_id=first.run_id)
+    assert second.run_id != first.run_id
+    first_after = AssignmentRepository(db_session).get_run(first.run_id)
+    assert first_after is not None
+    assert first_after.plan_status == "approved"
+    assert first_after.display_name is None
+    still = {
+        item.order_id for item in AssignmentRepository(db_session).list_items_for_run(first.run_id)
+    }
+    assert still == approved_items
+
+
+def test_prepare_appends_only_to_target_draft(db_session: Session) -> None:
+    _add_vehicle(db_session, code="T1")
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    service = PlanningService(db_session, settings=_settings())
+    first = service.run_plan(username="tester")
+    empty = service.create_empty_plan(username="tester")
+    request = service.prepare_plan_request(target_run_id=empty)
+    assert request.existing_run_id == empty
+    assert {o.delivery_code for o in request.solver_orders} == set()
+    request_first = service.prepare_plan_request(target_run_id=first.run_id)
+    assert request_first.existing_run_id == first.run_id
+    assert any(o.delivery_code == "A" for o in request_first.solver_orders)

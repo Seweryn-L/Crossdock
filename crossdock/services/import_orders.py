@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -10,7 +11,7 @@ from crossdock.config import Settings, get_settings
 from crossdock.domain.models import Location, Order
 from crossdock.excel_mapping import ExcelColumnMapping, load_excel_column_mapping
 from crossdock.ingest.excel_import import ExcelOrderSource
-from crossdock.ingest.ports import ImportReport, OrderSource
+from crossdock.ingest.ports import ImportReport, OrderSource, RowError
 from crossdock.storage.repositories import (
     AuditLogRepository,
     LocationCoordsRepository,
@@ -41,6 +42,26 @@ def _enrich_orders(orders: list[Order], coords: LocationCoordsRepository) -> lis
             )
         )
     return enriched
+
+
+@dataclass(frozen=True)
+class SkippedDuplicate:
+    delivery_code: str
+    existing_order_id: int | None
+
+
+@dataclass(frozen=True)
+class ImportOutcome:
+    """Structured persist result for the UI (duplicates listed in full)."""
+
+    accepted_count: int
+    skipped: tuple[SkippedDuplicate, ...]
+    rejected: tuple[RowError, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def skipped_codes(self) -> tuple[str, ...]:
+        return tuple(item.delivery_code for item in self.skipped)
 
 
 class ImportOrdersService:
@@ -74,44 +95,55 @@ class ImportOrdersService:
             default_delivery_days=days,
         )
 
-    def import_path(self, path: Path, *, username: str) -> ImportReport:
+    def import_path(self, path: Path, *, username: str) -> ImportOutcome:
         report = self._source.load(path)
         warnings = list(report.warnings)
         to_save = report.orders
+        skipped: list[SkippedDuplicate] = []
         if to_save:
             order_repo = OrderRepository(self._session)
-            existing = order_repo.existing_delivery_codes(
+            existing_ids = order_repo.existing_delivery_code_ids(
                 [order.delivery_code for order in to_save]
             )
-            skipped = [order.delivery_code for order in to_save if order.delivery_code in existing]
-            to_save = [order for order in to_save if order.delivery_code not in existing]
-            if skipped:
-                preview = ", ".join(skipped[:10])
-                extra = "…" if len(skipped) > 10 else ""
-                warnings.append(f"Pominięto {len(skipped)} zleceń już w bazie: {preview}{extra}")
+            skipped = [
+                SkippedDuplicate(
+                    delivery_code=order.delivery_code,
+                    existing_order_id=existing_ids.get(order.delivery_code),
+                )
+                for order in to_save
+                if order.delivery_code in existing_ids
+            ]
+            to_save = [order for order in to_save if order.delivery_code not in existing_ids]
         if to_save:
             coords = LocationCoordsRepository(self._session)
             enriched = _enrich_orders(to_save, coords)
             OrderRepository(self._session).add_many(enriched)
-            report = ImportReport(
+            saved_report = ImportReport(
                 orders=enriched,
                 rejected=report.rejected,
                 warnings=warnings,
             )
         else:
-            report = ImportReport(
+            saved_report = ImportReport(
                 orders=[],
                 rejected=report.rejected,
                 warnings=warnings,
             )
+        outcome = ImportOutcome(
+            accepted_count=saved_report.accepted_count,
+            skipped=tuple(skipped),
+            rejected=tuple(report.rejected),
+            warnings=tuple(warnings),
+        )
         AuditLogRepository(self._session).record(
             username=username,
             action="orders.import",
             details={
                 "source": str(path),
-                "accepted": report.accepted_count,
-                "rejected": len(report.rejected),
-                "warnings": len(report.warnings),
+                "accepted": outcome.accepted_count,
+                "rejected": len(outcome.rejected),
+                "skipped": len(outcome.skipped),
+                "warnings": len(outcome.warnings),
             },
         )
-        return report
+        return outcome

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -28,6 +29,8 @@ from crossdock.storage.repositories import (
     VehicleRepository,
     WarehouseQueueRepository,
 )
+from crossdock.storage.tables import AssignmentRunRow
+from crossdock.text_pl import PLAN_NAME_MAX_LEN, format_plan_label
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,60 @@ class UnlockOutcome:
 class DeletePlanOutcome:
     run_id: int
     reset_order_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PlanListItem:
+    run_id: int
+    display_name: str | None
+    plan_status: str
+    created_at: datetime | None
+    label: str
+
+
+@dataclass(frozen=True)
+class OrderGeoSnapshot:
+    """Pickle-safe delivery coords for routing (no ORM)."""
+
+    id: int
+    delivery_code: str
+    weight_kg: float
+    latitude: float | None
+    longitude: float | None
+    drop_key: str | None
+
+
+@dataclass(frozen=True)
+class PlanSolveRequest:
+    """Pickle-safe snapshot for run.cpu_bound assignment + routing."""
+
+    solver_orders: tuple[SolverOrder, ...]
+    solver_vehicles: tuple[SolverVehicle, ...]
+    order_geos: tuple[OrderGeoSnapshot, ...]
+    held_skipped: tuple[str, ...]
+    skipped_weight: tuple[str, ...]
+    existing_run_id: int | None
+    assignment_limit_s: float
+    routing_limit_s: float
+    seed: int
+    max_drops_per_route: int
+    depot: tuple[float, float]
+    cost_per_km: float
+
+
+@dataclass(frozen=True)
+class PreparedPlanResult:
+    """Pickle-safe solver output ready to persist on the UI process."""
+
+    existing_run_id: int | None
+    plan: PlanResult
+    items: tuple[dict[str, Any], ...]
+    routes: tuple[dict[str, Any], ...]
+    unassigned_order_ids: tuple[int, ...]
+    order_meta: tuple[tuple[int, str, float], ...]
+    planned_order_ids: tuple[int, ...]
+    skipped_no_weight: tuple[str, ...]
+    skipped_no_coords: tuple[str, ...]
 
 
 def orders_to_solver(orders: list[Order]) -> tuple[list[SolverOrder], list[str]]:
@@ -116,10 +173,24 @@ def drop_key_for_location(location: Location) -> str | None:
     return None
 
 
+def _order_to_geo(order: Order) -> OrderGeoSnapshot | None:
+    if order.id is None:
+        return None
+    loc = order.delivery_location
+    return OrderGeoSnapshot(
+        id=order.id,
+        delivery_code=order.delivery_code,
+        weight_kg=order.total_weight_kg or 0.0,
+        latitude=loc.latitude,
+        longitude=loc.longitude,
+        drop_key=drop_key_for_location(loc),
+    )
+
+
 def _build_routing_inputs(
     *,
     loads: list[Any],
-    orders_by_id: dict[int, Order],
+    orders_by_id: dict[int, OrderGeoSnapshot],
     depot: tuple[float, float],
     distance: HaversineDistanceProvider,
 ) -> tuple[list[VehicleRoutingInput], list[str], set[int]]:
@@ -134,22 +205,21 @@ def _build_routing_inputs(
         # drop_key -> (lat, lon, order_ids, weight)
         drops: dict[str, tuple[float, float, list[int], float]] = {}
         for oid in load.order_ids:
-            order = orders_by_id.get(oid)
-            if order is None:
+            snap = orders_by_id.get(oid)
+            if snap is None:
                 continue
-            loc = order.delivery_location
-            if loc.latitude is None or loc.longitude is None:
-                skipped_codes.append(order.delivery_code)
+            if snap.latitude is None or snap.longitude is None:
+                skipped_codes.append(snap.delivery_code)
                 no_coords_ids.add(oid)
                 continue
-            key = drop_key_for_location(loc)
+            key = snap.drop_key
             if key is None:
-                skipped_codes.append(order.delivery_code)
+                skipped_codes.append(snap.delivery_code)
                 no_coords_ids.add(oid)
                 continue
-            weight = order.total_weight_kg or 0.0
+            weight = snap.weight_kg
             if key not in drops:
-                drops[key] = (loc.latitude, loc.longitude, [oid], weight)
+                drops[key] = (snap.latitude, snap.longitude, [oid], weight)
             else:
                 lat, lon, ids, w = drops[key]
                 ids.append(oid)
@@ -176,6 +246,156 @@ def _build_routing_inputs(
             )
         )
     return vehicles_out, skipped_codes, no_coords_ids
+
+
+def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
+    """Assignment + routing with no DB access — safe for run.cpu_bound."""
+    assignment = solve_assignment(
+        AssignmentRequest(
+            orders=request.solver_orders,
+            vehicles=request.solver_vehicles,
+            time_limit_s=request.assignment_limit_s,
+            seed=request.seed,
+            max_drops_per_route=request.max_drops_per_route,
+        )
+    )
+
+    geos_by_id = {g.id: g for g in request.order_geos}
+    distance = HaversineDistanceProvider()
+    routing_inputs, skipped_coord_codes, no_coords_ids = _build_routing_inputs(
+        loads=list(assignment.loads),
+        orders_by_id=geos_by_id,
+        depot=request.depot,
+        distance=distance,
+    )
+
+    routing = solve_routes(
+        RoutingRequest(
+            vehicles=tuple(routing_inputs),
+            max_drops_per_route=request.max_drops_per_route,
+            time_limit_s=request.routing_limit_s,
+            seed=request.seed,
+            cost_per_km=request.cost_per_km,
+        )
+    )
+
+    warnings = list(assignment.warnings) + list(routing.warnings)
+    if request.held_skipped:
+        held = request.held_skipped
+        warnings.append(
+            f"Wstrzymane w magazynie: {len(held)} zleceń (poza planem)"
+            + (": " + ", ".join(held[:10]) if held else "")
+            + ("…" if len(held) > 10 else "")
+        )
+    if request.skipped_weight:
+        skipped_weight = request.skipped_weight
+        warnings.append(
+            f"Pominięto {len(skipped_weight)} zleceń bez wagi (kg): "
+            + ", ".join(skipped_weight[:10])
+            + ("…" if len(skipped_weight) > 10 else "")
+        )
+    if skipped_coord_codes:
+        warnings.append(
+            f"Brak współrzędnych dla {len(skipped_coord_codes)} zleceń "
+            f"(bez trasy): "
+            + ", ".join(skipped_coord_codes[:10])
+            + ("…" if len(skipped_coord_codes) > 10 else "")
+        )
+
+    assignment = AssignmentResult(
+        loads=assignment.loads,
+        unassigned_order_ids=assignment.unassigned_order_ids,
+        status=assignment.status,
+        wall_time_s=assignment.wall_time_s,
+        warnings=tuple(warnings),
+    )
+    plan = PlanResult(assignment=assignment, routing=routing)
+
+    fill_by_vehicle = {load.vehicle_id: load.fill_ratio for load in assignment.loads}
+    sequence_by_order: dict[int, tuple[int, str, int, str]] = {}
+    for route in routing.routes:
+        seq = 1
+        drop_for_order: dict[int, str] = {}
+        for vin in routing_inputs:
+            if vin.vehicle_id != route.vehicle_id:
+                continue
+            key_by_oid: dict[int, str] = {}
+            for key, oids in zip(vin.drop_keys, vin.order_ids_per_drop, strict=True):
+                for oid in oids:
+                    key_by_oid[oid] = key
+            for oid in route.ordered_order_ids:
+                drop_for_order[oid] = key_by_oid.get(oid, "?")
+        for oid in route.ordered_order_ids:
+            sequence_by_order[oid] = (
+                route.vehicle_id,
+                route.vehicle_code,
+                seq,
+                drop_for_order.get(oid, "?"),
+            )
+            seq += 1
+
+    routed_ids = set(sequence_by_order)
+    unrouted_ids = set(routing.unrouted_order_ids) | no_coords_ids
+    unassigned_ids = list(assignment.unassigned_order_ids)
+
+    items: list[dict[str, Any]] = []
+    for load in assignment.loads:
+        for oid in load.order_ids:
+            if oid in routed_ids:
+                vid, vcode, seq, dkey = sequence_by_order[oid]
+                items.append(
+                    {
+                        "vehicle_id": vid,
+                        "vehicle_code": vcode,
+                        "order_id": oid,
+                        "fill_ratio": fill_by_vehicle.get(load.vehicle_id),
+                        "sequence": seq,
+                        "drop_key": dkey,
+                    }
+                )
+            elif oid in unrouted_ids:
+                items.append(
+                    {
+                        "vehicle_id": load.vehicle_id,
+                        "vehicle_code": "UNROUTED",
+                        "order_id": oid,
+                        "fill_ratio": fill_by_vehicle.get(load.vehicle_id),
+                        "sequence": None,
+                        "drop_key": None,
+                    }
+                )
+
+    routes_payload = [
+        {
+            "vehicle_id": r.vehicle_id,
+            "vehicle_code": r.vehicle_code,
+            "drop_count": r.drop_count,
+            "distance_km": r.distance_km,
+            "cost_eur": r.cost_eur,
+        }
+        for r in routing.routes
+    ]
+
+    meta_map: dict[int, tuple[str, float]] = {
+        o.id: (o.delivery_code, o.weight_kg) for o in request.solver_orders
+    }
+    for geo in request.order_geos:
+        if geo.id not in meta_map:
+            meta_map[geo.id] = (geo.delivery_code, geo.weight_kg)
+
+    persist_unassigned = [oid for oid in unassigned_ids if oid not in unrouted_ids]
+    planned_ids = tuple(sorted(routed_ids))
+    return PreparedPlanResult(
+        existing_run_id=request.existing_run_id,
+        plan=plan,
+        items=tuple(items),
+        routes=tuple(routes_payload),
+        unassigned_order_ids=tuple(persist_unassigned),
+        order_meta=tuple((oid, code, weight) for oid, (code, weight) in meta_map.items()),
+        planned_order_ids=planned_ids,
+        skipped_no_weight=request.skipped_weight,
+        skipped_no_coords=tuple(skipped_coord_codes),
+    )
 
 
 class PlanningService:
@@ -274,208 +494,130 @@ class PlanningService:
             skipped_no_weight=tuple(skipped),
         )
 
-    def run_plan(self, *, username: str) -> PlanOutcome:
+    def prepare_plan_request(
+        self,
+        *,
+        target_run_id: int | None = None,
+        force_new: bool = False,
+    ) -> PlanSolveRequest:
+        """Read-only snapshot of solver input. Does not delete or mutate rows.
+
+        Appends to ``target_run_id`` when that run is a draft/partial.
+        An approved target, a missing target, or ``force_new`` starts a new run
+        (does not rewrite another plan's approved routes).
+        """
         repo = AssignmentRepository(self._session)
         vehicle_repo = VehicleRepository(self._session)
         order_repo = OrderRepository(self._session)
-        latest = repo.get_latest_run()
-        if latest is not None and latest.plan_status == "approved":
-            raise ValueError(
-                "Najnowszy plan jest już zatwierdzony — odblokuj plan albo pojedyncze trasy."
-            )
+        target = None if force_new else self._run_for_append(target_run_id)
 
         vehicles = vehicle_repo.list_available()
         if not vehicles:
             raise ValueError("Brak wolnych pojazdów — odblokuj trasę albo dodaj flotę.")
 
+        extra: list[Order] = []
         existing_run_id: int | None = None
-        if latest is not None and latest.plan_status == "draft":
-            planned_prev = order_repo.list_by_status(OrderStatus.PLANNED)
-            prev_ids = [o.id for o in planned_prev if o.id is not None]
-            if prev_ids:
-                order_repo.set_status_many(prev_ids, OrderStatus.NEW)
-            existing_run_id = latest.id
-            repo.delete_proposed_payload(latest.id)
-        elif latest is not None and latest.plan_status == "partial":
-            existing_run_id = latest.id
-            self._reset_proposed_orders_to_new(latest.id)
-            repo.delete_proposed_payload(latest.id)
+        if target is not None and target.plan_status == "draft":
+            existing_run_id = target.id
+            extra = self._planned_orders_on_run(target.id)
+        elif target is not None and target.plan_status == "partial":
+            existing_run_id = target.id
+            approved_vehicle_ids = {
+                r.vehicle_id
+                for r in repo.list_routes_for_run(target.id)
+                if r.route_status == "approved" and r.vehicle_id is not None
+            }
+            for item in repo.list_items_for_run(target.id):
+                keep = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+                    "UNASSIGNED",
+                    "UNROUTED",
+                }
+                if keep:
+                    continue
+                order = order_repo.get_by_id(item.order_id)
+                if order is not None and order.status == OrderStatus.PLANNED:
+                    extra.append(order)
 
-        orders, held_skipped = self._exclude_held(order_repo.list_by_status(OrderStatus.NEW))
+        by_id: dict[int, Order] = {}
+        for order in order_repo.list_by_status(OrderStatus.NEW):
+            if order.id is not None:
+                by_id[order.id] = order
+        for order in extra:
+            if order.id is not None:
+                by_id[order.id] = order
+        orders, held_skipped = self._exclude_held(list(by_id.values()))
         solver_orders, skipped_weight = orders_to_solver(orders)
-        solver_vehicles = vehicles_to_solver(vehicles)
-        orders_by_id = {o.id: o for o in orders if o.id is not None}
+        geos: list[OrderGeoSnapshot] = []
+        for order in orders:
+            geo = _order_to_geo(order)
+            if geo is not None:
+                geos.append(geo)
 
         total_limit = self._settings.solver_time_limit_s
-        assignment_limit = max(5.0, total_limit * 0.4)
-        routing_limit = max(5.0, total_limit * 0.6)
-
-        assignment = solve_assignment(
-            AssignmentRequest(
-                orders=tuple(solver_orders),
-                vehicles=tuple(solver_vehicles),
-                time_limit_s=assignment_limit,
-                seed=self._settings.solver_seed,
-                max_drops_per_route=self._settings.max_drops_per_route,
-            )
+        return PlanSolveRequest(
+            solver_orders=tuple(solver_orders),
+            solver_vehicles=tuple(vehicles_to_solver(vehicles)),
+            order_geos=tuple(geos),
+            held_skipped=tuple(held_skipped),
+            skipped_weight=tuple(skipped_weight),
+            existing_run_id=existing_run_id,
+            assignment_limit_s=max(5.0, total_limit * 0.4),
+            routing_limit_s=max(5.0, total_limit * 0.6),
+            seed=self._settings.solver_seed,
+            max_drops_per_route=self._settings.max_drops_per_route,
+            depot=(self._settings.depot_latitude, self._settings.depot_longitude),
+            cost_per_km=self._settings.cost_per_km,
         )
 
-        depot = (self._settings.depot_latitude, self._settings.depot_longitude)
-        distance = HaversineDistanceProvider()
-        routing_inputs, skipped_coord_codes, no_coords_ids = _build_routing_inputs(
-            loads=list(assignment.loads),
-            orders_by_id=orders_by_id,
-            depot=depot,
-            distance=distance,
-        )
-
-        routing = solve_routes(
-            RoutingRequest(
-                vehicles=tuple(routing_inputs),
-                max_drops_per_route=self._settings.max_drops_per_route,
-                time_limit_s=routing_limit,
-                seed=self._settings.solver_seed,
-                cost_per_km=self._settings.cost_per_km,
-            )
-        )
-
-        warnings = list(assignment.warnings) + list(routing.warnings)
-        if held_skipped:
-            warnings.append(
-                f"Wstrzymane w magazynie: {len(held_skipped)} zleceń (poza planem)"
-                + (": " + ", ".join(held_skipped[:10]) if held_skipped else "")
-                + ("…" if len(held_skipped) > 10 else "")
-            )
-        if skipped_weight:
-            warnings.append(
-                f"Pominięto {len(skipped_weight)} zleceń bez wagi (kg): "
-                + ", ".join(skipped_weight[:10])
-                + ("…" if len(skipped_weight) > 10 else "")
-            )
-        if skipped_coord_codes:
-            warnings.append(
-                f"Brak współrzędnych dla {len(skipped_coord_codes)} zleceń "
-                f"(bez trasy): "
-                + ", ".join(skipped_coord_codes[:10])
-                + ("…" if len(skipped_coord_codes) > 10 else "")
-            )
-
-        assignment = AssignmentResult(
-            loads=assignment.loads,
-            unassigned_order_ids=assignment.unassigned_order_ids,
-            status=assignment.status,
-            wall_time_s=assignment.wall_time_s,
-            warnings=tuple(warnings),
-        )
-        plan = PlanResult(assignment=assignment, routing=routing)
-
-        # Build persistence structures
-        fill_by_vehicle = {load.vehicle_id: load.fill_ratio for load in assignment.loads}
-        sequence_by_order: dict[int, tuple[int, str, int, str]] = {}
-        # order_id -> (vehicle_id, vehicle_code, sequence, drop_key)
-        for route in routing.routes:
-            # Build drop sequence map: order -> (seq among orders, drop_key)
-            # Orders at same drop share the same sequence position for drop order;
-            # we assign increasing sequence per order in route order.
-            seq = 1
-            drop_for_order: dict[int, str] = {}
-            # Reconstruct drop membership from ordered_drop_keys + ordered_order_ids
-            # ordered_order_ids is flattened in drop visit order.
-            # We need drop_key per order — use assignment grouping from routing input.
-            for vin in routing_inputs:
-                if vin.vehicle_id != route.vehicle_id:
-                    continue
-                key_by_oid: dict[int, str] = {}
-                for key, oids in zip(vin.drop_keys, vin.order_ids_per_drop, strict=True):
-                    for oid in oids:
-                        key_by_oid[oid] = key
-                for oid in route.ordered_order_ids:
-                    drop_for_order[oid] = key_by_oid.get(oid, "?")
-            for oid in route.ordered_order_ids:
-                sequence_by_order[oid] = (
-                    route.vehicle_id,
-                    route.vehicle_code,
-                    seq,
-                    drop_for_order.get(oid, "?"),
+    def persist_prepared_plan(self, prepared: PreparedPlanResult, *, username: str) -> PlanOutcome:
+        """Short write transaction: replace proposed payload, then save the new plan."""
+        repo = AssignmentRepository(self._session)
+        order_repo = OrderRepository(self._session)
+        existing_run_id = prepared.existing_run_id
+        if existing_run_id is not None:
+            latest = repo.get_run(existing_run_id)
+            if latest is not None and latest.plan_status == "approved":
+                raise ValueError(
+                    "Ten plan jest już zatwierdzony — wygeneruj nowy plan albo odblokuj trasy."
                 )
-                seq += 1
+            if latest is not None and latest.plan_status == "draft":
+                prev_ids = [
+                    oid
+                    for oid in self._routed_order_ids(latest.id)
+                    if self._order_status_is(oid, OrderStatus.PLANNED)
+                ]
+                if prev_ids:
+                    order_repo.set_status_many(prev_ids, OrderStatus.NEW)
+                repo.delete_proposed_payload(latest.id)
+            elif latest is not None and latest.plan_status == "partial":
+                self._reset_proposed_orders_to_new(latest.id)
+                repo.delete_proposed_payload(latest.id)
 
-        routed_ids = set(sequence_by_order)
-        unrouted_ids = set(routing.unrouted_order_ids) | no_coords_ids
-        # Also treat assignment-unassigned separately
-        unassigned_ids = list(assignment.unassigned_order_ids)
-
-        items: list[dict[str, Any]] = []
-        for load in assignment.loads:
-            for oid in load.order_ids:
-                if oid in routed_ids:
-                    vid, vcode, seq, dkey = sequence_by_order[oid]
-                    items.append(
-                        {
-                            "vehicle_id": vid,
-                            "vehicle_code": vcode,
-                            "order_id": oid,
-                            "fill_ratio": fill_by_vehicle.get(load.vehicle_id),
-                            "sequence": seq,
-                            "drop_key": dkey,
-                        }
-                    )
-                elif oid in unrouted_ids:
-                    items.append(
-                        {
-                            "vehicle_id": load.vehicle_id,
-                            "vehicle_code": "UNROUTED",
-                            "order_id": oid,
-                            "fill_ratio": fill_by_vehicle.get(load.vehicle_id),
-                            "sequence": None,
-                            "drop_key": None,
-                        }
-                    )
-
-        routes_payload = [
-            {
-                "vehicle_id": r.vehicle_id,
-                "vehicle_code": r.vehicle_code,
-                "drop_count": r.drop_count,
-                "distance_km": r.distance_km,
-                "cost_eur": r.cost_eur,
-            }
-            for r in routing.routes
-        ]
-        total_km = sum(r.distance_km for r in routing.routes)
-        total_cost = sum(r.cost_eur for r in routing.routes)
-
-        meta: dict[int, tuple[str, float]] = {
-            o.id: (o.delivery_code, o.weight_kg) for o in solver_orders
-        }
-        for order in orders:
-            if order.id is not None and order.id not in meta:
-                meta[order.id] = (order.delivery_code, order.total_weight_kg or 0.0)
-
-        # Avoid double-writing unrouted that are also in unassigned
-        unassigned_set = set(unassigned_ids)
-        unrouted_only = [oid for oid in unrouted_ids if oid not in unassigned_set]
-        # Persist UNROUTED as items already; do not also list them as UNASSIGNED
-        persist_unassigned = [oid for oid in unassigned_ids if oid not in unrouted_ids]
-
+        plan = prepared.plan
+        meta = {oid: (code, weight) for oid, code, weight in prepared.order_meta}
+        total_km = sum(float(r["distance_km"]) for r in prepared.routes)
+        total_cost = sum(float(r["cost_eur"]) for r in prepared.routes)
         run_id = repo.save_plan_run(
             username=username,
             status=plan.status,
             wall_time_s=plan.wall_time_s,
             warnings=list(plan.warnings),
-            items=items,
-            routes=routes_payload,
-            unassigned_order_ids=persist_unassigned,
+            items=list(prepared.items),
+            routes=list(prepared.routes),
+            unassigned_order_ids=list(prepared.unassigned_order_ids),
             order_meta=meta,
             total_distance_km=total_km,
             total_cost_eur=total_cost,
             existing_run_id=existing_run_id,
         )
 
-        planned_ids = sorted(routed_ids)
+        planned_ids = list(prepared.planned_order_ids)
         if planned_ids:
             order_repo.set_status_many(planned_ids, OrderStatus.PLANNED)
 
+        unrouted_only = [
+            item["order_id"] for item in prepared.items if item.get("vehicle_code") == "UNROUTED"
+        ]
         AuditLogRepository(self._session).record(
             username=username,
             action="planning.plan",
@@ -484,7 +626,7 @@ class PlanningService:
                 "status": plan.status,
                 "routed": len(planned_ids),
                 "unrouted": len(unrouted_only),
-                "unassigned": len(persist_unassigned),
+                "unassigned": len(prepared.unassigned_order_ids),
                 "total_distance_km": round(total_km, 2),
                 "total_cost_eur": round(total_cost, 2),
                 "wall_time_s": round(plan.wall_time_s, 3),
@@ -493,10 +635,107 @@ class PlanningService:
         return PlanOutcome(
             plan=plan,
             run_id=run_id,
-            skipped_no_weight=tuple(skipped_weight),
-            skipped_no_coords=tuple(skipped_coord_codes),
-            planned_order_ids=tuple(planned_ids),
+            skipped_no_weight=prepared.skipped_no_weight,
+            skipped_no_coords=prepared.skipped_no_coords,
+            planned_order_ids=prepared.planned_order_ids,
         )
+
+    def run_plan(
+        self,
+        *,
+        username: str,
+        target_run_id: int | None = None,
+        force_new: bool = False,
+    ) -> PlanOutcome:
+        prepared = solve_prepared_plan(
+            self.prepare_plan_request(target_run_id=target_run_id, force_new=force_new)
+        )
+        return self.persist_prepared_plan(prepared, username=username)
+
+    def list_recent_plans(self, *, limit: int = 30) -> tuple[PlanListItem, ...]:
+        rows = AssignmentRepository(self._session).list_recent_runs(limit=limit)
+        return tuple(self._to_plan_list_item(row) for row in rows)
+
+    def resolve_run_id(self, preferred: int | None) -> int | None:
+        return AssignmentRepository(self._session).resolve_run_id(preferred)
+
+    def create_empty_plan(self, *, username: str) -> int:
+        run_id = AssignmentRepository(self._session).save_plan_run(
+            username=username,
+            status="empty",
+            wall_time_s=0.0,
+            warnings=[],
+            items=[],
+            routes=[],
+            unassigned_order_ids=[],
+            order_meta={},
+            total_distance_km=None,
+            total_cost_eur=None,
+        )
+        AuditLogRepository(self._session).record(
+            username=username,
+            action="planning.create",
+            details={"run_id": run_id},
+        )
+        return run_id
+
+    def rename_plan(self, *, run_id: int, display_name: str, username: str) -> str | None:
+        name = display_name.strip()
+        if len(name) > PLAN_NAME_MAX_LEN:
+            raise ValueError(f"Nazwa planu może mieć maksymalnie {PLAN_NAME_MAX_LEN} znaków.")
+        stored = name or None
+        repo = AssignmentRepository(self._session)
+        run = repo.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        previous = run.display_name
+        repo.set_display_name(run_id, stored)
+        AuditLogRepository(self._session).record(
+            username=username,
+            action="planning.rename",
+            details={"run_id": run_id, "previous": previous, "display_name": stored},
+        )
+        return stored
+
+    def _to_plan_list_item(self, row: AssignmentRunRow) -> PlanListItem:
+        display_name = row.display_name
+        created_at = row.created_at
+        return PlanListItem(
+            run_id=int(row.id),
+            display_name=display_name,
+            plan_status=str(row.plan_status),
+            created_at=created_at,
+            label=format_plan_label(
+                run_id=int(row.id),
+                display_name=display_name,
+                plan_status=str(row.plan_status),
+                created_at=created_at,
+            ),
+        )
+
+    def _run_for_append(self, target_run_id: int | None) -> AssignmentRunRow | None:
+        repo = AssignmentRepository(self._session)
+        run = repo.get_run(target_run_id) if target_run_id is not None else repo.get_latest_run()
+        if run is None:
+            return None
+        if run.plan_status in {"draft", "partial"}:
+            return run
+        return None
+
+    def _planned_orders_on_run(self, run_id: int) -> list[Order]:
+        extra: list[Order] = []
+        order_repo = OrderRepository(self._session)
+        for item in AssignmentRepository(self._session).list_items_for_run(run_id):
+            if item.vehicle_code in {"UNASSIGNED", "UNROUTED"}:
+                continue
+            order = order_repo.get_by_id(item.order_id)
+            if order is not None and order.status == OrderStatus.PLANNED:
+                extra.append(order)
+        return extra
+
+    def _order_status_is(self, order_id: int, status: OrderStatus) -> bool:
+        order = OrderRepository(self._session).get_by_id(order_id)
+        return order is not None and order.status == status
 
     def approve_plan(self, *, run_id: int, username: str) -> ApproveOutcome:
         repo = AssignmentRepository(self._session)
