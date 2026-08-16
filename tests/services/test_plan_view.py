@@ -100,7 +100,7 @@ def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
     _add_order(db_session, code="C", weight=2000, lat=51.92, lon=4.48)
 
     PlanningService(db_session, settings=_settings()).run_plan(username="tester")
-    view = build_plan_view(db_session)
+    view = build_plan_view(db_session, settings=_settings())
     assert view.summary is not None
     assert view.summary.riding >= 1
     assert view.summary.staying >= 1

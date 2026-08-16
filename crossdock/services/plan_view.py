@@ -93,6 +93,11 @@ def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucke
     return "attention", REASON_UNKNOWN
 
 
+def _min_slack_sort_key(row: dict[str, object]) -> int:
+    slack = row.get("min_slack")
+    return slack if isinstance(slack, int) else 10**9
+
+
 def build_plan_view(
     session: Session,
     settings: Settings | None = None,
@@ -238,9 +243,7 @@ def build_plan_view(
         remaining = holding_kg + unassigned_kg
         if remaining > capacity_kg:
             hold_routes = [r for r in route_rows if r.get("disposition") == "hold"]
-            hold_routes.sort(
-                key=lambda r: r["min_slack"] if isinstance(r.get("min_slack"), int) else 10**9
-            )
+            hold_routes.sort(key=_min_slack_sort_key)
             for row in hold_routes:
                 if remaining <= capacity_kg:
                     break
@@ -256,7 +259,9 @@ def build_plan_view(
         if code in hold_codes:
             row["reason"] = REASON_HOLDING
             staying.append(row)
-            holding_ids.append(int(row["order_id"]))  # type: ignore[arg-type]
+            oid = row.get("order_id")
+            if isinstance(oid, int):
+                holding_ids.append(oid)
         else:
             final_riding.append(row)
     riding = final_riding

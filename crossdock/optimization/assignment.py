@@ -13,6 +13,7 @@ from ortools.sat.python import cp_model
 from crossdock.optimization.dto import (
     AssignmentRequest,
     AssignmentResult,
+    SolverOrder,
     VehicleLoad,
 )
 
@@ -79,6 +80,7 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
     by_id = {order.id: order for order in request.orders}
 
     if n_o == 0:
+        _append_sla_warnings(warnings, request, tuple(forced_unassigned), by_id)
         return AssignmentResult(
             loads=tuple(
                 VehicleLoad(
@@ -177,6 +179,22 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
         ]
 
     unassigned = tuple(forced_unassigned + [oid for oid in order_ids if oid not in assigned])
+    _append_sla_warnings(warnings, request, unassigned, by_id)
+    return AssignmentResult(
+        loads=tuple(loads),
+        unassigned_order_ids=unassigned,
+        status=status_name,
+        wall_time_s=time.perf_counter() - started,
+        warnings=tuple(warnings),
+    )
+
+
+def _append_sla_warnings(
+    warnings: list[str],
+    request: AssignmentRequest,
+    unassigned: tuple[int, ...],
+    by_id: dict[int, SolverOrder],
+) -> None:
     overdue_codes = [o.delivery_code for o in request.orders if o.overdue]
     if overdue_codes:
         warnings.append(
@@ -194,10 +212,3 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
             + ", ".join(missed[:10])
             + ("…" if len(missed) > 10 else "")
         )
-    return AssignmentResult(
-        loads=tuple(loads),
-        unassigned_order_ids=unassigned,
-        status=status_name,
-        wall_time_s=time.perf_counter() - started,
-        warnings=tuple(warnings),
-    )

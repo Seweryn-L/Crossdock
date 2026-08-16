@@ -20,8 +20,8 @@ from crossdock.storage.repositories import OrderRepository
 from crossdock.storage.tables import AuditLogRow
 
 
-def _settings() -> Settings:
-    return Settings(
+def _settings(**kwargs: object) -> Settings:
+    base = dict(
         storage_secret=SecretStr("test-secret-not-for-production"),
         cost_per_km=1.2,
         storage_cost_per_pallet_day=2.0,
@@ -33,6 +33,8 @@ def _settings() -> Settings:
         planning_date=date(2026, 7, 25),
         ship_lead_days=2,
     )
+    base.update(kwargs)
+    return Settings(**base)  # type: ignore[arg-type]
 
 
 def test_propose_and_accept_buffer(db_session: Session) -> None:
