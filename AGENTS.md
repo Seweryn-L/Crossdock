@@ -65,3 +65,27 @@ Wsparcie drugiego formatu — osobne mapowanie / Faza późniejsza; nie jest dom
 
 Uwaga: żaden plik nie zawiera liczby palet (wymaganie FR-004) — kwestia otwarta, wyjaśniana z firmą (W-04).
 Słowniki sprzętu różnią się między plikami ("Flatbed" vs "EU: 09 CURTAIN / BOX TRAILER") — mapuj przez konfigurację.
+
+## Cursor Cloud specific instructions
+
+Tooling: `uv` is the package manager (installed to `~/.local/bin`, on PATH via `~/.bashrc`/`~/.profile`).
+Dependencies are refreshed automatically on startup by the environment update script (`uv sync`).
+
+- Local Windows vs Cloud Linux: developers work on Windows (`uv.exe`, PowerShell, Task Scheduler). Cloud Agents
+  always run on a Linux VM. Do **not** reuse a local Windows snapshot, `.venv`, or copied wheels as the Cloud
+  base — they are incompatible. Recreate the venv on the VM with `uv sync` (`uv.lock` is cross-platform;
+  binary wheels are not). Snapshot the Linux VM, never the Windows PC.
+- Config/secrets: the app reads `.env` (gitignored; template in `.env.example`). `CROSSDOCK_STORAGE_SECRET`
+  is required or the server refuses to start; `CROSSDOCK_ADMIN_PASSWORD` seeds the `admin` login on first
+  run against an empty DB. A working local `.env` is created during environment setup; recreate it from
+  `.env.example` if missing (generate the secret with `uv run python -c "import secrets; print(secrets.token_hex(32))"`).
+- Runtime dir gotcha: the SQLite DB and logs live under `data/` (gitignored, not tracked). Alembic does NOT
+  create it — run `mkdir -p data` before `uv run alembic upgrade head` on a fresh checkout, or migrations fail
+  with `sqlite3.OperationalError: unable to open database file`.
+- Run the app (dev): `uv run alembic upgrade head` then `uv run crossdock`. NiceGUI serves on
+  `CROSSDOCK_HOST:CROSSDOCK_PORT` (default `0.0.0.0:8080`). `__main__.py` runs with `reload=False`.
+  First boot seeds the `admin` account and 14 placeholder vehicles.
+- Quality gates (same as `.pre-commit-config.yaml`): `uv run ruff check` / `uv run ruff format --check`,
+  `uv run mypy` (only `domain`/`services`/`optimization`), `uv run lint-imports`, `uv run pytest`.
+- Hello-world smoke flow: log in at `/login` (admin), upload `tests/fixtures/przykładowe_dane_od_firmy.xlsx`
+  on `/orders` (imports 50 orders), then `/plans` → "Generuj przydział" runs the CP-SAT solver (OPTIMAL, 50 assigned).
