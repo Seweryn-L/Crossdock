@@ -11,6 +11,7 @@ from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
 from crossdock.services.plan_view import (
     REASON_ATTENTION,
+    REASON_HOLDING,
     REASON_STAYING,
     build_plan_view,
     classify_item,
@@ -28,6 +29,9 @@ def _settings(**kwargs: object) -> Settings:
         cost_per_km=1.2,
         depot_latitude=51.176,
         depot_longitude=4.836,
+        planning_date=date(2026, 7, 30),
+        ship_lead_days=2,
+        warehouse_capacity_kg=1_000_000.0,
     )
     base.update(kwargs)
     return Settings(**base)  # type: ignore[arg-type]
@@ -96,7 +100,7 @@ def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
     _add_order(db_session, code="C", weight=2000, lat=51.92, lon=4.48)
 
     PlanningService(db_session, settings=_settings()).run_plan(username="tester")
-    view = build_plan_view(db_session)
+    view = build_plan_view(db_session, settings=_settings())
     assert view.summary is not None
     assert view.summary.riding >= 1
     assert view.summary.staying >= 1
@@ -139,3 +143,45 @@ def test_build_plan_view_flags_below_min_fill(db_session: Session) -> None:
     assert view.routes
     assert view.routes[0]["below_min_fill"] is True
     assert view.routes[0]["weight_fill_pct"] == round(1500 / 12000 * 100)
+
+
+def test_thin_route_holds_when_slack_remains(db_session: Session) -> None:
+    _add_vehicle(db_session, weight=12000)
+    _add_order(db_session, code="A", weight=4800, lat=48.85, lon=2.35)
+    settings = _settings(planning_date=date(2026, 7, 25), min_fill_ratio=0.90)
+    PlanningService(db_session, settings=settings).run_plan(username="tester")
+    view = build_plan_view(db_session, settings=settings)
+    assert view.routes
+    assert view.routes[0]["disposition"] == "hold"
+    assert view.holding_order_ids
+    assert view.summary is not None
+    assert view.summary.riding == 0
+    assert view.staying
+    assert view.staying[0]["reason"] == REASON_HOLDING
+
+
+def test_thin_route_sends_on_last_leave_day(db_session: Session) -> None:
+    _add_vehicle(db_session, weight=12000)
+    _add_order(db_session, code="A", weight=4800, lat=48.85, lon=2.35)
+    settings = _settings(planning_date=date(2026, 7, 30), min_fill_ratio=0.90)
+    PlanningService(db_session, settings=settings).run_plan(username="tester")
+    view = build_plan_view(db_session, settings=settings)
+    assert view.routes[0]["disposition"] == "send"
+    assert view.summary is not None
+    assert view.summary.riding == 1
+    assert view.holding_order_ids == ()
+
+
+def test_overflow_capacity_flips_hold_to_send(db_session: Session) -> None:
+    _add_vehicle(db_session, weight=12000)
+    _add_order(db_session, code="A", weight=4800, lat=48.85, lon=2.35)
+    settings = _settings(
+        planning_date=date(2026, 7, 25),
+        min_fill_ratio=0.90,
+        warehouse_capacity_kg=1000.0,
+    )
+    PlanningService(db_session, settings=settings).run_plan(username="tester")
+    view = build_plan_view(db_session, settings=settings)
+    assert view.routes[0]["disposition"] == "send"
+    assert view.routes[0]["sla_label"] == "Wypychane z magazynu"
+    assert view.holding_order_ids == ()

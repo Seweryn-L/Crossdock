@@ -35,6 +35,8 @@ def decide_one(candidate: BufferCandidate, rates: BufferRates) -> BufferDecision
     action = "ship_now"
 
     max_days = max(rates.max_buffer_days, 0)
+    if candidate.slack_days is not None:
+        max_days = 0 if candidate.slack_days <= 0 else min(max_days, candidate.slack_days)
     for days in range(1, max_days + 1):
         storage = estimate_storage_eur(pallets, days, rates.storage_cost_per_pallet_day)
         buffer_cost = storage + ftl_later

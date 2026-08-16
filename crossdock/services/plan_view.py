@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
-from crossdock.config import Settings, get_settings
-from crossdock.storage.repositories import AssignmentRepository, VehicleRepository
+from crossdock.config import Settings, effective_planning_date, get_settings
+from crossdock.domain.sla import route_should_send, slack_days
+from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 from crossdock.storage.tables import AssignmentItemRow, AssignmentRunRow
 from crossdock.text_pl import format_plan_label
 from crossdock.text_pl import route_status_pl as _route_status_pl
@@ -18,6 +19,7 @@ from crossdock.text_pl import route_status_pl as _route_status_pl
 PlanBucket = Literal["riding", "staying", "attention"]
 
 REASON_STAYING = "brak miejsca w flocie / nie wszedł do transportu całopojazdowego"
+REASON_HOLDING = "czeka na dopełnienie (poniżej progu zapełnienia)"
 REASON_ATTENTION = "brak trasy (współrzędne lub limit punktów rozładunku)"
 REASON_UNKNOWN = "nieznany stan"
 
@@ -64,6 +66,7 @@ class PlanView:
     staying: list[dict[str, object]]
     attention: list[dict[str, object]]
     staying_order_ids: tuple[int, ...]
+    holding_order_ids: tuple[int, ...] = ()
     below_min_fill_count: int = 0
     min_fill_ratio: float = 0.90
 
@@ -88,6 +91,11 @@ def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucke
     if vehicle_code == "UNROUTED":
         return "attention", REASON_ATTENTION
     return "attention", REASON_UNKNOWN
+
+
+def _min_slack_sort_key(row: dict[str, object]) -> int:
+    slack = row.get("min_slack")
+    return slack if isinstance(slack, int) else 10**9
 
 
 def build_plan_view(
@@ -115,12 +123,17 @@ def build_plan_view(
             staying=[],
             attention=[],
             staying_order_ids=(),
+            holding_order_ids=(),
             below_min_fill_count=0,
             min_fill_ratio=min_fill,
         )
 
     items = repo.list_items_for_run(run.id)
     routes = repo.list_routes_for_run(run.id)
+    order_repo = OrderRepository(session)
+    planning = effective_planning_date(cfg) if cfg is not None else date.today()
+    lead = cfg.ship_lead_days if cfg is not None else 2
+    capacity_kg = float(cfg.warehouse_capacity_kg) if cfg is not None else 0.0
 
     riding: list[dict[str, object]] = []
     staying: list[dict[str, object]] = []
@@ -129,16 +142,23 @@ def build_plan_view(
     weight_by_vehicle: dict[str, float] = {}
     orders_by_vehicle: dict[str, set[int]] = defaultdict(set)
     drops_by_vehicle: dict[str, list[str]] = defaultdict(list)
+    slack_by_order: dict[int, int] = {}
+    slack_by_vehicle: dict[str, list[int]] = defaultdict(list)
 
     for item in items:
+        order = order_repo.get_by_id(item.order_id)
+        if order is not None:
+            slack_by_order[item.order_id] = slack_days(order.delivery_date, planning, lead)
         bucket, reason = classify_item(vehicle_code=item.vehicle_code, sequence=item.sequence)
-        row = _item_to_row(item, reason)
+        row = _item_to_row(item, reason, slack=slack_by_order.get(item.order_id))
         if bucket == "riding":
             riding.append(row)
             weight_by_vehicle[item.vehicle_code] = weight_by_vehicle.get(
                 item.vehicle_code, 0.0
             ) + float(item.weight_kg)
             orders_by_vehicle[item.vehicle_code].add(item.order_id)
+            if item.order_id in slack_by_order:
+                slack_by_vehicle[item.vehicle_code].append(slack_by_order[item.order_id])
             if item.drop_key:
                 drops_by_vehicle[item.vehicle_code].append(item.drop_key)
         elif bucket == "staying":
@@ -159,10 +179,19 @@ def build_plan_view(
         below = bool(fill is not None and fill < min_fill)
         if below:
             below_count += 1
+        slacks = slack_by_vehicle.get(route.vehicle_code, [])
+        send = route_should_send(fill_ratio=fill, min_fill_ratio=min_fill, slacks=slacks)
         unique_drops = list(dict.fromkeys(drops_by_vehicle.get(route.vehicle_code, [])))
         drop_summary = ", ".join(unique_drops[:3])
         if len(unique_drops) > 3:
             drop_summary = f"{drop_summary}…"
+        min_slack = min(slacks) if slacks else None
+        if send and min_slack is not None and min_slack <= 0:
+            sla_label = "Ostatni dzień wyjazdu" if min_slack == 0 else "Spóźnione"
+        elif send:
+            sla_label = "Wyślij"
+        else:
+            sla_label = f"Czeka na dopełnienie ({round((fill or 0) * 100)}%)"
         route_rows.append(
             {
                 "vehicle_id": route.vehicle_id,
@@ -176,6 +205,9 @@ def build_plan_view(
                 "cost_eur": round(route.cost_eur, 2),
                 "weight_fill_pct": round(fill * 100) if fill is not None else None,
                 "below_min_fill": below,
+                "disposition": "send" if send else "hold",
+                "sla_label": sla_label,
+                "min_slack": min_slack,
             }
         )
     known = {r.vehicle_code for r in routes}
@@ -193,8 +225,46 @@ def build_plan_view(
                 "cost_eur": 0.0,
                 "weight_fill_pct": None,
                 "below_min_fill": False,
+                "disposition": "send",
+                "sla_label": "Wyślij",
+                "min_slack": min(slack_by_vehicle.get(code, []), default=None),
             }
         )
+
+    if capacity_kg > 0:
+        holding_kg = sum(
+            weight_by_vehicle.get(str(r["vehicle"]), 0.0)
+            for r in route_rows
+            if r.get("disposition") == "hold"
+        )
+        unassigned_kg = sum(
+            float(item.weight_kg) for item in items if item.vehicle_code == "UNASSIGNED"
+        )
+        remaining = holding_kg + unassigned_kg
+        if remaining > capacity_kg:
+            hold_routes = [r for r in route_rows if r.get("disposition") == "hold"]
+            hold_routes.sort(key=_min_slack_sort_key)
+            for row in hold_routes:
+                if remaining <= capacity_kg:
+                    break
+                row["disposition"] = "send"
+                row["sla_label"] = "Wypychane z magazynu"
+                remaining -= weight_by_vehicle.get(str(row["vehicle"]), 0.0)
+
+    hold_codes = {str(r["vehicle"]) for r in route_rows if r.get("disposition") == "hold"}
+    final_riding: list[dict[str, object]] = []
+    holding_ids: list[int] = []
+    for row in riding:
+        code = str(row.get("vehicle") or "")
+        if code in hold_codes:
+            row["reason"] = REASON_HOLDING
+            staying.append(row)
+            oid = row.get("order_id")
+            if isinstance(oid, int):
+                holding_ids.append(oid)
+        else:
+            final_riding.append(row)
+    riding = final_riding
 
     vehicle_count = len({r["vehicle"] for r in route_rows})
     summary = PlanSummary(
@@ -216,12 +286,23 @@ def build_plan_view(
         staying=staying,
         attention=attention,
         staying_order_ids=tuple(staying_ids),
+        holding_order_ids=tuple(holding_ids),
         below_min_fill_count=below_count,
         min_fill_ratio=min_fill,
     )
 
 
-def _item_to_row(item: AssignmentItemRow, reason: str) -> dict[str, Any]:
+def _item_to_row(
+    item: AssignmentItemRow, reason: str, *, slack: int | None = None
+) -> dict[str, Any]:
+    sla = "—"
+    if slack is not None:
+        if slack < 0:
+            sla = "spóźnione"
+        elif slack == 0:
+            sla = "musi dziś"
+        else:
+            sla = f"może czekać {slack} dni"
     return {
         "vehicle": item.vehicle_code,
         "sequence": item.sequence if item.sequence is not None else "—",
@@ -231,6 +312,8 @@ def _item_to_row(item: AssignmentItemRow, reason: str) -> dict[str, Any]:
         "weight_kg": round(item.weight_kg, 1),
         "fill_pct": (f"{item.fill_ratio * 100:.0f}%" if item.fill_ratio is not None else "—"),
         "reason": reason or "—",
+        "slack_days": slack,
+        "sla": sla,
     }
 
 

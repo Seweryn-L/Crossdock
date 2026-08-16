@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,9 @@ class SolverOrder:
     delivery_code: str
     weight_kg: float
     drop_key: str | None = None
+    delivery_date: date | None = None
+    must_ship: bool = False
+    overdue: bool = False
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,8 @@ class AssignmentRequest:
     time_limit_s: float = 45.0
     seed: int = 42
     max_drops_per_route: int = 0
+    planning_date: date | None = None
+    ship_lead_days: int = 2
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,7 @@ class BufferCandidate:
     weight_kg: float
     pallet_count: int
     distance_km: float
+    slack_days: int | None = None
 
 
 @dataclass(frozen=True)

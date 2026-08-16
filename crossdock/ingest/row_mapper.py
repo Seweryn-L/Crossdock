@@ -101,6 +101,7 @@ def row_to_shipment_and_locations(
     mapping: ExcelColumnMapping,
     *,
     default_delivery_days: int,
+    as_of: date | None = None,
 ) -> Order:
     """Build a single-shipment Order from one spreadsheet row.
 
@@ -162,6 +163,7 @@ def row_to_shipment_and_locations(
             ),
             delivery_date=delivery_date,
             default_delivery_days=default_delivery_days,
+            as_of=as_of,
         )
     except ValidationError as exc:
         raise ValueError(f"walidacja domenowa: {exc.errors()[0]['msg']}") from exc

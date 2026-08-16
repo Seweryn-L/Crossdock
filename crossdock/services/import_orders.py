@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from crossdock.config import Settings, get_settings
+from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.domain.models import Location, Order
 from crossdock.excel_mapping import ExcelColumnMapping, load_excel_column_mapping
 from crossdock.ingest.excel_import import ExcelOrderSource
@@ -90,9 +90,15 @@ class ImportOrdersService:
                 if settings is not None
                 else get_settings().default_delivery_days
             )
+        as_of = None
+        if settings is not None:
+            as_of = effective_planning_date(settings)
+        elif default_delivery_days is None:
+            as_of = effective_planning_date()
         self._source = source or ExcelOrderSource(
             self._mapping,
             default_delivery_days=days,
+            as_of=as_of,
         )
 
     def import_path(self, path: Path, *, username: str) -> ImportOutcome:

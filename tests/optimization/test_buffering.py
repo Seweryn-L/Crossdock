@@ -55,6 +55,33 @@ def test_golden_ship_now_when_storage_expensive() -> None:
     assert decision.buffer_days == 0
 
 
+def test_buffer_capped_by_slack_and_forced_ship_when_due() -> None:
+    cand = BufferCandidate(
+        order_id=3,
+        delivery_code="SLA",
+        weight_kg=500,
+        pallet_count=2,
+        distance_km=100.0,
+        slack_days=0,
+    )
+    decision = decide_one(cand, _rates())
+    assert decision.action == "ship_now"
+    assert decision.buffer_days == 0
+
+    cand2 = BufferCandidate(
+        order_id=4,
+        delivery_code="SLA2",
+        weight_kg=500,
+        pallet_count=2,
+        distance_km=100.0,
+        slack_days=1,
+    )
+    decision2 = decide_one(cand2, _rates())
+    assert decision2.action == "buffer"
+    assert decision2.buffer_days == 1
+    assert decision2.buffer_days <= 1
+
+
 def test_decide_buffer_batch() -> None:
     rates = _rates()
     decisions = decide_buffer(
@@ -93,3 +120,22 @@ def test_buffer_invariants(distance: float, pallets: int, ltl_mult: float, stora
         assert d.cost_buffer_eur <= d.cost_ship_now_eur * (1.0 - rates.savings_threshold) + 1e-6
     else:
         assert d.buffer_days == 0
+
+
+@given(slack=st.integers(min_value=-2, max_value=5))
+@settings(max_examples=20, deadline=None)
+def test_buffer_days_never_exceed_slack(slack: int) -> None:
+    cand = BufferCandidate(
+        order_id=1,
+        delivery_code="SLA",
+        weight_kg=500,
+        pallet_count=2,
+        distance_km=100.0,
+        slack_days=slack,
+    )
+    decision = decide_one(cand, _rates(max_buffer_days=3))
+    if slack <= 0:
+        assert decision.action == "ship_now"
+        assert decision.buffer_days == 0
+    else:
+        assert decision.buffer_days <= slack

@@ -24,6 +24,9 @@ def _settings() -> Settings:
         cost_per_km=1.2,
         depot_latitude=51.176,
         depot_longitude=4.836,
+        planning_date=date(2026, 7, 30),
+        ship_lead_days=2,
+        warehouse_capacity_kg=1_000_000.0,
     )
 
 

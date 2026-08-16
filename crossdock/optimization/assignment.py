@@ -13,11 +13,14 @@ from ortools.sat.python import cp_model
 from crossdock.optimization.dto import (
     AssignmentRequest,
     AssignmentResult,
+    SolverOrder,
     VehicleLoad,
 )
 
 # OR-Tools CP-SAT works on integers; scale kg to grams.
 _WEIGHT_SCALE = 1000
+# Must-ship orders (last legal departure / queue / overflow) beat heavier optional ones.
+_URGENT_BONUS = 100
 
 
 def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
@@ -74,8 +77,10 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
     n_o = len(order_ids)
     n_v = len(request.vehicles)
     caps = [round(v.weight_capacity_kg * _WEIGHT_SCALE) for v in request.vehicles]
+    by_id = {order.id: order for order in request.orders}
 
     if n_o == 0:
+        _append_sla_warnings(warnings, request, tuple(forced_unassigned), by_id)
         return AssignmentResult(
             loads=tuple(
                 VehicleLoad(
@@ -109,7 +114,6 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
 
     max_drops = int(request.max_drops_per_route)
     if max_drops >= 1:
-        by_id = {order.id: order for order in request.orders}
         drop_keys = [(by_id[oid].drop_key or f"__order_{oid}") for oid in order_ids]
         unique_keys = sorted(set(drop_keys))
         key_index = {key: idx for idx, key in enumerate(unique_keys)}
@@ -124,8 +128,13 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
         for v in range(n_v):
             model.add(sum(used[d, v] for d in range(len(unique_keys))) <= max_drops)
 
-    # Maximize assigned weight (FR-011).
-    model.maximize(sum(weights[o] * x[o, v] for o in range(n_o) for v in range(n_v)))
+    # Maximize assigned weight (FR-011); must-ship kg counts much more.
+    objective_terms = []
+    for o in range(n_o):
+        bonus = 1 + (_URGENT_BONUS if by_id[order_ids[o]].must_ship else 0)
+        for v in range(n_v):
+            objective_terms.append(bonus * weights[o] * x[o, v])
+    model.maximize(sum(objective_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(request.time_limit_s)
@@ -170,6 +179,7 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
         ]
 
     unassigned = tuple(forced_unassigned + [oid for oid in order_ids if oid not in assigned])
+    _append_sla_warnings(warnings, request, unassigned, by_id)
     return AssignmentResult(
         loads=tuple(loads),
         unassigned_order_ids=unassigned,
@@ -177,3 +187,28 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
         wall_time_s=time.perf_counter() - started,
         warnings=tuple(warnings),
     )
+
+
+def _append_sla_warnings(
+    warnings: list[str],
+    request: AssignmentRequest,
+    unassigned: tuple[int, ...],
+    by_id: dict[int, SolverOrder],
+) -> None:
+    overdue_codes = [o.delivery_code for o in request.orders if o.overdue]
+    if overdue_codes:
+        warnings.append(
+            f"Spóźnione (wyjazd po terminie-{request.ship_lead_days} dni): "
+            f"{len(overdue_codes)}"
+            + (": " + ", ".join(overdue_codes[:10]) if overdue_codes else "")
+            + ("…" if len(overdue_codes) > 10 else "")
+        )
+    missed = [
+        by_id[oid].delivery_code for oid in unassigned if oid in by_id and by_id[oid].must_ship
+    ]
+    if missed:
+        warnings.append(
+            "Nie przydzielono zleceń, które muszą wyjechać dziś: "
+            + ", ".join(missed[:10])
+            + ("…" if len(missed) > 10 else "")
+        )
