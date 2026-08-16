@@ -71,6 +71,10 @@ Słowniki sprzętu różnią się między plikami ("Flatbed" vs "EU: 09 CURTAIN 
 Tooling: `uv` is the package manager (installed to `~/.local/bin`, on PATH via `~/.bashrc`/`~/.profile`).
 Dependencies are refreshed automatically on startup by the environment update script (`uv sync`).
 
+- Local Windows vs Cloud Linux: developers work on Windows (`uv.exe`, PowerShell, Task Scheduler). Cloud Agents
+  always run on a Linux VM. Do **not** reuse a local Windows snapshot, `.venv`, or copied wheels as the Cloud
+  base — they are incompatible. Recreate the venv on the VM with `uv sync` (`uv.lock` is cross-platform;
+  binary wheels are not). Snapshot the Linux VM, never the Windows PC.
 - Config/secrets: the app reads `.env` (gitignored; template in `.env.example`). `CROSSDOCK_STORAGE_SECRET`
   is required or the server refuses to start; `CROSSDOCK_ADMIN_PASSWORD` seeds the `admin` login on first
   run against an empty DB. A working local `.env` is created during environment setup; recreate it from
