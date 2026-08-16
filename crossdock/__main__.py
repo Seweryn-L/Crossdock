@@ -38,21 +38,12 @@ def _seed_admin() -> None:
 
 
 def _seed_fleet() -> None:
-    from crossdock.services.fleet import seed_placeholder_fleet, sync_fleet_capacities_from_seed
+    from crossdock.services.fleet import seed_placeholder_fleet
 
     with session_scope() as session:
         added = seed_placeholder_fleet(session)
-        synced = sync_fleet_capacities_from_seed(session)
     if added:
-        logger.info(
-            "Utworzono {} pojazdów floty (pojemności z FLota / W-03).",
-            added,
-        )
-    if synced:
-        logger.info(
-            "Zsynchronizowano pojemności {} pojazdów ze seedem Martyny (W-03).",
-            synced,
-        )
+        logger.info("Utworzono {} pojazdów floty (placeholder do W-03).", added)
 
 
 def _seed_locations() -> None:

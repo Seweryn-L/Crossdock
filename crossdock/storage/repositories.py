@@ -50,6 +50,7 @@ def _to_domain_vehicle(row: VehicleRow) -> Vehicle:
         weight_capacity_kg=row.weight_capacity_kg,
         is_active=row.is_active,
         is_placeholder=row.is_placeholder,
+        is_busy=bool(row.is_busy),
     )
 
 
@@ -191,6 +192,14 @@ class OrderRepository:
     def count(self) -> int:
         return len(self._session.scalars(select(OrderRow.id)).all())
 
+    def existing_delivery_codes(self, codes: list[str]) -> set[str]:
+        if not codes:
+            return set()
+        rows = self._session.scalars(
+            select(OrderRow.delivery_code).where(OrderRow.delivery_code.in_(codes))
+        ).all()
+        return set(rows)
+
     def get_by_id(self, order_id: int) -> Order | None:
         row = self._session.scalar(
             select(OrderRow)
@@ -263,8 +272,28 @@ class VehicleRepository:
         ).all()
         return [_to_domain_vehicle(r) for r in rows]
 
+    def list_available(self) -> list[Vehicle]:
+        rows = self._session.scalars(
+            select(VehicleRow)
+            .where(VehicleRow.is_active.is_(True), VehicleRow.is_busy.is_(False))
+            .order_by(VehicleRow.code)
+        ).all()
+        return [_to_domain_vehicle(r) for r in rows]
+
+    def list_by_type(self, vehicle_type: VehicleType) -> list[Vehicle]:
+        rows = self._session.scalars(
+            select(VehicleRow)
+            .where(VehicleRow.vehicle_type == vehicle_type.value)
+            .order_by(VehicleRow.code)
+        ).all()
+        return [_to_domain_vehicle(r) for r in rows]
+
     def count(self) -> int:
         return len(self._session.scalars(select(VehicleRow.id)).all())
+
+    def get(self, vehicle_id: int) -> Vehicle | None:
+        row = self._session.get(VehicleRow, vehicle_id)
+        return _to_domain_vehicle(row) if row else None
 
     def get_by_code(self, code: str) -> Vehicle | None:
         row = self._session.scalar(select(VehicleRow).where(VehicleRow.code == code))
@@ -278,8 +307,17 @@ class VehicleRepository:
             weight_capacity_kg=vehicle.weight_capacity_kg,
             is_active=vehicle.is_active,
             is_placeholder=vehicle.is_placeholder,
+            is_busy=vehicle.is_busy,
         )
         self._session.add(row)
+        self._session.flush()
+        return _to_domain_vehicle(row)
+
+    def set_busy(self, vehicle_id: int, busy: bool) -> Vehicle | None:
+        row = self._session.get(VehicleRow, vehicle_id)
+        if row is None:
+            return None
+        row.is_busy = busy
         self._session.flush()
         return _to_domain_vehicle(row)
 
@@ -442,25 +480,42 @@ class AssignmentRepository:
         loads: list[dict[str, Any]] | None = None,
         total_distance_km: float | None = None,
         total_cost_eur: float | None = None,
+        existing_run_id: int | None = None,
     ) -> int:
         """Persist a full plan (assignment items + routes).
 
         ``items`` entries: vehicle_id, vehicle_code, order_id, fill_ratio,
         sequence, drop_key.
         When ``items`` is empty and ``loads`` is provided, expand loads (T3 compat).
+        When ``existing_run_id`` is set, append to that draft/partial run
+        (approved routes must already have been kept).
         """
-        run = AssignmentRunRow(
-            username=username,
-            status=status,
-            wall_time_s=wall_time_s,
-            unassigned_count=len(unassigned_order_ids),
-            warnings_json=json.dumps(warnings, ensure_ascii=False) if warnings else None,
-            plan_status="draft",
-            total_distance_km=total_distance_km,
-            total_cost_eur=total_cost_eur,
-        )
-        self._session.add(run)
-        self._session.flush()
+        if existing_run_id is not None:
+            run = self.get_run(existing_run_id)
+            if run is None:
+                raise ValueError(f"Plan run #{existing_run_id} nie istnieje.")
+            run.status = status
+            run.wall_time_s = wall_time_s
+            run.unassigned_count = len(unassigned_order_ids)
+            run.warnings_json = json.dumps(warnings, ensure_ascii=False) if warnings else None
+            if total_distance_km is not None:
+                run.total_distance_km = total_distance_km
+            if total_cost_eur is not None:
+                run.total_cost_eur = total_cost_eur
+            self._session.flush()
+        else:
+            run = AssignmentRunRow(
+                username=username,
+                status=status,
+                wall_time_s=wall_time_s,
+                unassigned_count=len(unassigned_order_ids),
+                warnings_json=json.dumps(warnings, ensure_ascii=False) if warnings else None,
+                plan_status="draft",
+                total_distance_km=total_distance_km,
+                total_cost_eur=total_cost_eur,
+            )
+            self._session.add(run)
+            self._session.flush()
 
         expanded = list(items)
         if not expanded and loads:
@@ -518,10 +573,44 @@ class AssignmentRepository:
                     drop_count=int(route["drop_count"]),
                     distance_km=float(route["distance_km"]),
                     cost_eur=float(route["cost_eur"]),
+                    route_status=str(route.get("route_status") or "proposed"),
                 )
             )
         self._session.flush()
+        if existing_run_id is not None:
+            self.refresh_run_totals(run.id)
         return run.id
+
+    def delete_proposed_payload(self, run_id: int) -> None:
+        """Drop proposed routes and non-approved items; keep approved routes."""
+        routes = self.list_routes_for_run(run_id)
+        approved_vehicle_ids = {
+            r.vehicle_id
+            for r in routes
+            if r.route_status == "approved" and r.vehicle_id is not None
+        }
+        for item in self.list_items_for_run(run_id):
+            keep_approved = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+                "UNASSIGNED",
+                "UNROUTED",
+            }
+            if not keep_approved:
+                self._session.delete(item)
+        for route in routes:
+            if route.route_status != "approved":
+                self._session.delete(route)
+        self._session.flush()
+
+    def refresh_run_totals(self, run_id: int) -> None:
+        run = self.get_run(run_id)
+        if run is None:
+            return
+        routes = self.list_routes_for_run(run_id)
+        run.total_distance_km = sum(r.distance_km for r in routes)
+        run.total_cost_eur = sum(r.cost_eur for r in routes)
+        items = self.list_items_for_run(run_id)
+        run.unassigned_count = sum(1 for i in items if i.vehicle_code == "UNASSIGNED")
+        self._session.flush()
 
     def get_latest_run_id(self) -> int | None:
         row = self._session.scalar(
@@ -614,6 +703,13 @@ class WarehouseQueueRepository:
     def get_by_order_id(self, order_id: int) -> WarehouseQueueRow | None:
         return self._session.scalar(
             select(WarehouseQueueRow).where(WarehouseQueueRow.order_id == order_id)
+        )
+
+    def held_order_ids(self) -> set[int]:
+        return set(
+            self._session.scalars(
+                select(WarehouseQueueRow.order_id).where(WarehouseQueueRow.status == "held")
+            ).all()
         )
 
     def next_position(self) -> int:

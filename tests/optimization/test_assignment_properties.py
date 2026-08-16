@@ -25,6 +25,7 @@ def assignment_instances(draw: st.DrawFn) -> AssignmentRequest:
                     allow_infinity=False,
                 )
             ),
+            drop_key=draw(st.sampled_from(["A", "B", "C", "D", None])),
         )
         for i in range(n_orders)
     )
@@ -48,6 +49,7 @@ def assignment_instances(draw: st.DrawFn) -> AssignmentRequest:
         vehicles=vehicles,
         time_limit_s=2.0,
         seed=draw(st.integers(min_value=0, max_value=10_000)),
+        max_drops_per_route=draw(st.integers(min_value=0, max_value=3)),
     )
 
 
@@ -62,7 +64,11 @@ def test_assignment_invariants(request: AssignmentRequest) -> None:
     assert set(assigned) | set(result.unassigned_order_ids) == input_ids
 
     weights = {o.id: o.weight_kg for o in request.orders}
+    orders_by_id = {o.id: o for o in request.orders}
     for load in result.loads:
         total = sum(weights[oid] for oid in load.order_ids)
         assert total <= load.capacity_kg + 1.0  # 1 kg tolerance for rounding
         assert abs(total - load.total_weight_kg) < 1.0
+        if request.max_drops_per_route >= 1:
+            keys = {(orders_by_id[oid].drop_key or f"__order_{oid}") for oid in load.order_ids}
+            assert len(keys) <= request.max_drops_per_route

@@ -305,7 +305,7 @@ async def orders_page() -> None:
                 pallets_btn.disable()
                 info_hint(
                     "Gdy baza jest pusta, zaimportuj plik Excel, aby rozpocząć planowanie. "
-                    "Import doda nowe zlecenia. Usuń zaznaczone w tabeli. "
+                    "Zlecenia o istniejącym kodzie dostawy są pomijane. Usuń zaznaczone w tabeli. "
                     "Zmień palety: dostępne po zatwierdzeniu planu; "
                     "zaznacz jedno zlecenie zatwierdzone."
                 )
@@ -649,6 +649,12 @@ async def plans_page() -> None:
                                             "field": "cost_eur",
                                             "sortable": True,
                                         },
+                                        {
+                                            "headerName": "Zapełnienie wag. %",
+                                            "field": "weight_fill_pct",
+                                            "sortable": True,
+                                            "width": 140,
+                                        },
                                     ],
                                     "rowData": [],
                                     "rowSelection": "single",
@@ -658,12 +664,15 @@ async def plans_page() -> None:
                                     "rowClassRules": {
                                         "cd-row-approved": "data.route_status === 'approved'",
                                         "cd-row-proposed": "data.route_status !== 'approved'",
+                                        "cd-row-lowfill": "data.below_min_fill === true",
                                     },
                                 }
                             )
                             .classes("w-full")
                             .style("height: 200px")
                         )
+                    fill_warn_label = ui.label("").classes("text-sm text-amber-800")
+                    fill_warn_label.set_visibility(False)
                     enlarge_routes_btn.on_click(
                         attach_grid_enlarge(
                             routes_grid,
@@ -935,6 +944,15 @@ async def plans_page() -> None:
                     cost_wrap.set_visibility(False)
             routes_grid.options["rowData"] = view.routes
             routes_grid.update()
+            low = view.below_min_fill_count
+            if low:
+                fill_warn_label.set_text(
+                    f"{low} tras poniżej progu zapełnienia (min. {view.min_fill_ratio * 100:.0f}%)."
+                )
+                fill_warn_label.set_visibility(True)
+            else:
+                fill_warn_label.set_text("")
+                fill_warn_label.set_visibility(False)
             riding_grid.options["rowData"] = view.riding
             riding_grid.update()
             staying_grid.options["rowData"] = view.staying

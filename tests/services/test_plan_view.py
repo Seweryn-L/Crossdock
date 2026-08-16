@@ -107,7 +107,7 @@ def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
         assert row["reason"] == REASON_STAYING
 
 
-def test_build_plan_view_attention_unrouted(db_session: Session) -> None:
+def test_build_plan_view_extra_city_stays(db_session: Session) -> None:
     _add_vehicle(db_session, weight=12000)
     coords = [
         ("A", 48.85, 2.35, "Paris"),
@@ -121,9 +121,21 @@ def test_build_plan_view_attention_unrouted(db_session: Session) -> None:
     PlanningService(db_session, settings=_settings(max_drops_per_route=3)).run_plan(
         username="tester"
     )
-    view = build_plan_view(db_session)
+    view = build_plan_view(db_session, settings=_settings(max_drops_per_route=3))
     assert view.summary is not None
-    assert view.summary.attention >= 1
     assert view.summary.riding == 3
-    for row in view.attention:
-        assert row["reason"] == REASON_ATTENTION
+    assert view.summary.staying == 1
+    assert view.summary.attention == 0
+    for row in view.staying:
+        assert row["reason"] == REASON_STAYING
+
+
+def test_build_plan_view_flags_below_min_fill(db_session: Session) -> None:
+    _add_vehicle(db_session, weight=12000)
+    _add_order(db_session, code="A", weight=1500, lat=48.85, lon=2.35)
+    PlanningService(db_session, settings=_settings(min_fill_ratio=0.90)).run_plan(username="tester")
+    view = build_plan_view(db_session, settings=_settings(min_fill_ratio=0.90))
+    assert view.below_min_fill_count == 1
+    assert view.routes
+    assert view.routes[0]["below_min_fill"] is True
+    assert view.routes[0]["weight_fill_pct"] == round(1500 / 12000 * 100)

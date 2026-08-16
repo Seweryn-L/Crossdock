@@ -95,6 +95,7 @@ class VehicleRow(Base):
     weight_capacity_kg: Mapped[float]
     is_active: Mapped[bool] = mapped_column(default=True)
     is_placeholder: Mapped[bool] = mapped_column(default=True)
+    is_busy: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -173,6 +174,7 @@ class AssignmentRouteRow(Base):
     drop_count: Mapped[int]
     distance_km: Mapped[float]
     cost_eur: Mapped[float]
+    route_status: Mapped[str] = mapped_column(String(20), default="proposed")
 
     run: Mapped[AssignmentRunRow] = relationship(back_populates="routes")
 

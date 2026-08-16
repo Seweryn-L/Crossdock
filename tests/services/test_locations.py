@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import Session
 
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment
@@ -24,6 +25,9 @@ def test_seed_location_coords_inserts_when_empty(db_session: Session) -> None:
 
 
 def test_june_fixture_import_gets_coordinates(db_session: Session) -> None:
+    fixture = Path("tests/fixtures/carrier_load_status1620780.xlsx")
+    if not fixture.is_file():
+        pytest.skip(f"Brak fixture czerwcowego: {fixture}")
     seed_location_coords(db_session, path=Path("config/location_coords_seed.json"))
     report = ImportOrdersService(db_session).import_path(
         june_carrier_load_fixture(), username="tester"

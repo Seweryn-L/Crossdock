@@ -95,6 +95,7 @@ class Vehicle(BaseModel):
     weight_capacity_kg: float = Field(gt=0)
     is_active: bool = True
     is_placeholder: bool = True
+    is_busy: bool = False
 
 
 class Shipment(BaseModel):

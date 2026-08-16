@@ -7,8 +7,10 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
-from crossdock.storage.repositories import AssignmentRepository
+from crossdock.config import Settings, get_settings
+from crossdock.storage.repositories import AssignmentRepository, VehicleRepository
 from crossdock.storage.tables import AssignmentItemRow
+from crossdock.text_pl import route_status_pl as _route_status_pl
 
 PlanBucket = Literal["riding", "staying", "attention"]
 
@@ -51,6 +53,8 @@ class PlanView:
     staying: list[dict[str, object]]
     attention: list[dict[str, object]]
     staying_order_ids: tuple[int, ...]
+    below_min_fill_count: int = 0
+    min_fill_ratio: float = 0.90
 
 
 def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucket, str]:
@@ -63,8 +67,17 @@ def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucke
     return "attention", REASON_UNKNOWN
 
 
-def build_plan_view(session: Session) -> PlanView:
+def build_plan_view(session: Session, settings: Settings | None = None) -> PlanView:
+    cfg = settings
+    if cfg is None:
+        try:
+            cfg = get_settings()
+        except Exception:
+            cfg = None
+    min_fill = cfg.min_fill_ratio if cfg is not None else 0.90
+
     repo = AssignmentRepository(session)
+    vehicles = VehicleRepository(session)
     run = repo.get_latest_run()
     if run is None:
         return PlanView(
@@ -74,6 +87,8 @@ def build_plan_view(session: Session) -> PlanView:
             staying=[],
             attention=[],
             staying_order_ids=(),
+            below_min_fill_count=0,
+            min_fill_ratio=min_fill,
         )
 
     items = repo.list_items_for_run(run.id)
@@ -83,30 +98,62 @@ def build_plan_view(session: Session) -> PlanView:
     staying: list[dict[str, object]] = []
     attention: list[dict[str, object]] = []
     staying_ids: list[int] = []
+    weight_by_vehicle: dict[str, float] = {}
 
     for item in items:
         bucket, reason = classify_item(vehicle_code=item.vehicle_code, sequence=item.sequence)
         row = _item_to_row(item, reason)
         if bucket == "riding":
             riding.append(row)
+            weight_by_vehicle[item.vehicle_code] = weight_by_vehicle.get(
+                item.vehicle_code, 0.0
+            ) + float(item.weight_kg)
         elif bucket == "staying":
             staying.append(row)
             staying_ids.append(item.order_id)
         else:
             attention.append(row)
 
-    route_rows: list[dict[str, object]] = [
-        {
-            "vehicle": route.vehicle_code,
-            "drop_count": route.drop_count,
-            "distance_km": round(route.distance_km, 1),
-            "cost_eur": round(route.cost_eur, 2),
-        }
-        for route in routes
-    ]
+    route_rows: list[dict[str, object]] = []
+    below_count = 0
+    for route in routes:
+        vehicle = vehicles.get_by_code(route.vehicle_code)
+        used_kg = weight_by_vehicle.get(route.vehicle_code, 0.0)
+        cap = vehicle.weight_capacity_kg if vehicle is not None else None
+        fill: float | None = None
+        if cap is not None and cap > 0:
+            fill = used_kg / cap
+        below = bool(fill is not None and fill < min_fill)
+        if below:
+            below_count += 1
+        route_rows.append(
+            {
+                "vehicle_id": route.vehicle_id,
+                "vehicle": route.vehicle_code,
+                "route_status": route.route_status,
+                "route_status_pl": _route_status_pl(route.route_status),
+                "drop_count": route.drop_count,
+                "distance_km": round(route.distance_km, 1),
+                "cost_eur": round(route.cost_eur, 2),
+                "weight_fill_pct": round(fill * 100) if fill is not None else None,
+                "below_min_fill": below,
+            }
+        )
     known = {r.vehicle_code for r in routes}
     for code in {i.vehicle_code for i in items} - known - {"UNASSIGNED", "UNROUTED"}:
-        route_rows.append({"vehicle": code, "drop_count": 0, "distance_km": 0.0, "cost_eur": 0.0})
+        route_rows.append(
+            {
+                "vehicle_id": None,
+                "vehicle": code,
+                "route_status": "proposed",
+                "route_status_pl": _route_status_pl("proposed"),
+                "drop_count": 0,
+                "distance_km": 0.0,
+                "cost_eur": 0.0,
+                "weight_fill_pct": None,
+                "below_min_fill": False,
+            }
+        )
 
     vehicle_count = len({r["vehicle"] for r in route_rows})
     summary = PlanSummary(
@@ -126,6 +173,8 @@ def build_plan_view(session: Session) -> PlanView:
         staying=staying,
         attention=attention,
         staying_order_ids=tuple(staying_ids),
+        below_min_fill_count=below_count,
+        min_fill_ratio=min_fill,
     )
 
 

@@ -76,14 +76,33 @@ class ImportOrdersService:
 
     def import_path(self, path: Path, *, username: str) -> ImportReport:
         report = self._source.load(path)
-        if report.orders:
+        warnings = list(report.warnings)
+        to_save = report.orders
+        if to_save:
+            order_repo = OrderRepository(self._session)
+            existing = order_repo.existing_delivery_codes(
+                [order.delivery_code for order in to_save]
+            )
+            skipped = [order.delivery_code for order in to_save if order.delivery_code in existing]
+            to_save = [order for order in to_save if order.delivery_code not in existing]
+            if skipped:
+                preview = ", ".join(skipped[:10])
+                extra = "…" if len(skipped) > 10 else ""
+                warnings.append(f"Pominięto {len(skipped)} zleceń już w bazie: {preview}{extra}")
+        if to_save:
             coords = LocationCoordsRepository(self._session)
-            enriched = _enrich_orders(report.orders, coords)
+            enriched = _enrich_orders(to_save, coords)
             OrderRepository(self._session).add_many(enriched)
             report = ImportReport(
                 orders=enriched,
                 rejected=report.rejected,
-                warnings=report.warnings,
+                warnings=warnings,
+            )
+        else:
+            report = ImportReport(
+                orders=[],
+                rejected=report.rejected,
+                warnings=warnings,
             )
         AuditLogRepository(self._session).record(
             username=username,

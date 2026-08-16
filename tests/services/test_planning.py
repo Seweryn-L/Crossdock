@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
 from crossdock.services.planning import PlanningService
+from crossdock.services.warehouse_queue import enqueue_order, list_queue, set_held
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 
 
@@ -118,9 +119,9 @@ def test_run_plan_routes_and_sets_planned(db_session: Session) -> None:
     assert seqs == [1, 2, 3]
 
 
-def test_run_plan_trims_fourth_drop(db_session: Session) -> None:
+def test_run_plan_caps_drops_as_unassigned(db_session: Session) -> None:
     _add_vehicle(db_session)
-    # Four distinct far-apart cities → 4 drops; max 3 → 1 unrouted
+    # Four distinct far-apart cities → CP-SAT keeps at most 3 drops.
     coords = [
         ("A", 48.85, 2.35, "Paris"),
         ("B", 50.85, 4.35, "Brussels"),
@@ -134,8 +135,10 @@ def test_run_plan_trims_fourth_drop(db_session: Session) -> None:
     routed = set(outcome.planned_order_ids)
     assert len(routed) == 3
     items = AssignmentRepository(db_session).list_items_for_run(outcome.run_id)
+    unassigned = [i for i in items if i.vehicle_code == "UNASSIGNED"]
     unrouted = [i for i in items if i.vehicle_code == "UNROUTED"]
-    assert len(unrouted) == 1
+    assert len(unassigned) == 1
+    assert unrouted == []
 
 
 def test_approve_plan_sets_approved_and_blocks_second(db_session: Session) -> None:
@@ -187,7 +190,8 @@ def test_unlock_plan_allows_regenerate(db_session: Session) -> None:
     assert run.approved_by is None
 
     again = service.run_plan(username="tester")
-    assert again.run_id > plan.run_id
+    assert again.run_id == plan.run_id
+    assert len(again.planned_order_ids) >= 1
 
 
 def test_delete_plan_allows_regenerate(db_session: Session) -> None:
@@ -213,3 +217,78 @@ def test_delete_plan_allows_regenerate(db_session: Session) -> None:
     run = AssignmentRepository(db_session).get_run(again.run_id)
     assert run is not None
     assert run.plan_status == "draft"
+
+
+def test_approve_plan_removes_orders_from_queue(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    a = _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    b = _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    assert a.id is not None and b.id is not None
+    enqueue_order(db_session, order_id=a.id, username="tester")
+    enqueue_order(db_session, order_id=b.id, username="tester")
+
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    approved = service.approve_plan(run_id=plan.run_id, username="approver")
+    queued_ids = {e.order_id for e in list_queue(db_session)}
+    for oid in approved.approved_order_ids:
+        assert oid not in queued_ids
+
+
+def test_held_orders_are_excluded_from_plan(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    held = _add_order(db_session, code="HOLD", weight=2000, lat=48.85, lon=2.35)
+    free = _add_order(db_session, code="FREE", weight=2000, lat=50.85, lon=4.35)
+    assert held.id is not None and free.id is not None
+    enqueue_order(db_session, order_id=held.id, username="tester")
+    set_held(db_session, order_id=held.id, held=True, username="tester")
+
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    held_after = OrderRepository(db_session).get_by_id(held.id)
+    assert held_after is not None
+    assert held_after.status == OrderStatus.NEW
+    assert held.id not in plan.planned_order_ids
+    assert any("Wstrzymane w magazynie" in w for w in plan.plan.warnings)
+
+    set_held(db_session, order_id=held.id, held=False, username="tester")
+    again = service.run_plan(username="tester")
+    assert held.id in again.planned_order_ids
+
+
+def test_approve_route_marks_vehicle_busy_and_unlocks(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    assert routes
+    vehicle_id = routes[0].vehicle_id
+    assert vehicle_id is not None
+
+    outcome = service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    assert outcome.vehicle_code == routes[0].vehicle_code
+    assert outcome.approved_order_ids
+    vehicle = VehicleRepository(db_session).get(vehicle_id)
+    assert vehicle is not None
+    assert vehicle.is_busy is True
+    assert VehicleRepository(db_session).list_available() == []
+
+    run = AssignmentRepository(db_session).get_run(plan.run_id)
+    assert run is not None
+    assert run.plan_status in {"partial", "approved"}
+    refreshed = next(
+        r
+        for r in AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+        if r.vehicle_id == vehicle_id
+    )
+    assert refreshed.route_status == "approved"
+
+    unlocked = service.unlock_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="unlocker")
+    assert unlocked.vehicle_id == vehicle_id
+    vehicle = VehicleRepository(db_session).get(vehicle_id)
+    assert vehicle is not None
+    assert vehicle.is_busy is False
+    assert VehicleRepository(db_session).list_available()

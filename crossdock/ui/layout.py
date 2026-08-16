@@ -724,6 +724,9 @@ body, .nicegui-content, .q-page, .q-layout {
 .ag-row.cd-row-proposed {
   background: var(--cd-card) !important;
 }
+.ag-row.cd-row-lowfill {
+  border-left: 3px solid var(--cd-warn-text, #b45309) !important;
+}
 /* AG Grid dark/light */
 .ag-theme-alpine,
 .ag-theme-alpine-dark,

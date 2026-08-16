@@ -23,6 +23,7 @@ class UtilizationRow:
     fill_ratio: float | None
     order_count: int
     total_weight_kg: float
+    route_status: str = "proposed"
 
 
 @dataclass(frozen=True)
@@ -89,17 +90,14 @@ def build_report(
         v_items = items_by_vehicle.get(route.vehicle_code, [])
         total_weight = sum(i.weight_kg for i in v_items)
         fill: float | None = None
-        if v_items and v_items[0].fill_ratio is not None:
-            fill = float(v_items[0].fill_ratio)
-        else:
-            vehicle = None
-            if route.vehicle_id is not None:
-                # lookup by code as fallback
-                vehicle = vehicles.get_by_code(route.vehicle_code)
-            elif route.vehicle_code:
-                vehicle = vehicles.get_by_code(route.vehicle_code)
-            if vehicle is not None and vehicle.weight_capacity_kg > 0:
-                fill = total_weight / vehicle.weight_capacity_kg
+        vehicle = vehicles.get_by_code(route.vehicle_code)
+        if vehicle is not None and vehicle.weight_capacity_kg > 0:
+            fill = total_weight / vehicle.weight_capacity_kg
+            if fill < cfg.min_fill_ratio:
+                warnings.append(
+                    f"Trasa {route.vehicle_code}: zapełnienie {fill * 100:.0f}% "
+                    f"poniżej progu {cfg.min_fill_ratio * 100:.0f}%."
+                )
         utilization.append(
             UtilizationRow(
                 vehicle_code=route.vehicle_code,
@@ -109,6 +107,7 @@ def build_report(
                 fill_ratio=fill,
                 order_count=len(v_items),
                 total_weight_kg=total_weight,
+                route_status=route.route_status,
             )
         )
 

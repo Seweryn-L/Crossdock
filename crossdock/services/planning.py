@@ -26,6 +26,7 @@ from crossdock.storage.repositories import (
     AuditLogRepository,
     OrderRepository,
     VehicleRepository,
+    WarehouseQueueRepository,
 )
 
 
@@ -49,12 +50,16 @@ class PlanOutcome:
 class ApproveOutcome:
     run_id: int
     approved_order_ids: tuple[int, ...]
+    vehicle_id: int | None = None
+    vehicle_code: str | None = None
 
 
 @dataclass(frozen=True)
 class UnlockOutcome:
     run_id: int
     reset_order_ids: tuple[int, ...]
+    vehicle_id: int | None = None
+    vehicle_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,7 @@ def orders_to_solver(orders: list[Order]) -> tuple[list[SolverOrder], list[str]]
                 id=order.id,
                 delivery_code=order.delivery_code,
                 weight_kg=weight,
+                drop_key=drop_key_for_location(order.delivery_location),
             )
         )
     return solver_orders, skipped
@@ -177,8 +183,23 @@ class PlanningService:
         self._session = session
         self._settings = settings or get_settings()
 
+    def _exclude_held(self, orders: list[Order]) -> tuple[list[Order], list[str]]:
+        held = WarehouseQueueRepository(self._session).held_order_ids()
+        if not held:
+            return orders, []
+        kept: list[Order] = []
+        skipped: list[str] = []
+        for order in orders:
+            if order.id is not None and order.id in held:
+                skipped.append(order.delivery_code)
+            else:
+                kept.append(order)
+        return kept, skipped
+
     def run_assignment(self, *, username: str) -> PlanningOutcome:
-        orders = OrderRepository(self._session).list_by_status(OrderStatus.NEW)
+        orders, held_skipped = self._exclude_held(
+            OrderRepository(self._session).list_by_status(OrderStatus.NEW)
+        )
         vehicles = VehicleRepository(self._session).list_active()
         solver_orders, skipped = orders_to_solver(orders)
         solver_vehicles = vehicles_to_solver(vehicles)
@@ -188,10 +209,17 @@ class PlanningService:
             vehicles=tuple(solver_vehicles),
             time_limit_s=self._settings.solver_time_limit_s,
             seed=self._settings.solver_seed,
+            max_drops_per_route=self._settings.max_drops_per_route,
         )
         result = solve_assignment(request)
 
         warnings = list(result.warnings)
+        if held_skipped:
+            warnings.append(
+                f"Wstrzymane w magazynie: {len(held_skipped)} zleceń (poza planem)"
+                + (": " + ", ".join(held_skipped[:10]) if held_skipped else "")
+                + ("…" if len(held_skipped) > 10 else "")
+            )
         if skipped:
             warnings.append(
                 f"Pominięto {len(skipped)} zleceń bez wagi (kg): "
@@ -248,23 +276,32 @@ class PlanningService:
 
     def run_plan(self, *, username: str) -> PlanOutcome:
         repo = AssignmentRepository(self._session)
+        vehicle_repo = VehicleRepository(self._session)
+        order_repo = OrderRepository(self._session)
         latest = repo.get_latest_run()
         if latest is not None and latest.plan_status == "approved":
             raise ValueError(
-                "Najnowszy plan jest już zatwierdzony — nie można wygenerować nowego "
-                "bez odblokowania (MVP: brak odblokowania w T4)."
+                "Najnowszy plan jest już zatwierdzony — odblokuj plan albo pojedyncze trasy."
             )
 
-        order_repo = OrderRepository(self._session)
-        # Re-generating a draft: return previous PLANNED orders to the pool.
+        vehicles = vehicle_repo.list_available()
+        if not vehicles:
+            raise ValueError("Brak wolnych pojazdów — odblokuj trasę albo dodaj flotę.")
+
+        existing_run_id: int | None = None
         if latest is not None and latest.plan_status == "draft":
             planned_prev = order_repo.list_by_status(OrderStatus.PLANNED)
             prev_ids = [o.id for o in planned_prev if o.id is not None]
             if prev_ids:
                 order_repo.set_status_many(prev_ids, OrderStatus.NEW)
+            existing_run_id = latest.id
+            repo.delete_proposed_payload(latest.id)
+        elif latest is not None and latest.plan_status == "partial":
+            existing_run_id = latest.id
+            self._reset_proposed_orders_to_new(latest.id)
+            repo.delete_proposed_payload(latest.id)
 
-        orders = order_repo.list_by_status(OrderStatus.NEW)
-        vehicles = VehicleRepository(self._session).list_active()
+        orders, held_skipped = self._exclude_held(order_repo.list_by_status(OrderStatus.NEW))
         solver_orders, skipped_weight = orders_to_solver(orders)
         solver_vehicles = vehicles_to_solver(vehicles)
         orders_by_id = {o.id: o for o in orders if o.id is not None}
@@ -279,6 +316,7 @@ class PlanningService:
                 vehicles=tuple(solver_vehicles),
                 time_limit_s=assignment_limit,
                 seed=self._settings.solver_seed,
+                max_drops_per_route=self._settings.max_drops_per_route,
             )
         )
 
@@ -302,6 +340,12 @@ class PlanningService:
         )
 
         warnings = list(assignment.warnings) + list(routing.warnings)
+        if held_skipped:
+            warnings.append(
+                f"Wstrzymane w magazynie: {len(held_skipped)} zleceń (poza planem)"
+                + (": " + ", ".join(held_skipped[:10]) if held_skipped else "")
+                + ("…" if len(held_skipped) > 10 else "")
+            )
         if skipped_weight:
             warnings.append(
                 f"Pominięto {len(skipped_weight)} zleceń bez wagi (kg): "
@@ -425,6 +469,7 @@ class PlanningService:
             order_meta=meta,
             total_distance_km=total_km,
             total_cost_eur=total_cost,
+            existing_run_id=existing_run_id,
         )
 
         planned_ids = sorted(routed_ids)
@@ -467,7 +512,6 @@ class PlanningService:
             for item in items
             if item.sequence is not None and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
         ]
-        # Only PLANNED → APPROVED
         order_repo = OrderRepository(self._session)
         approved: list[int] = []
         for oid in to_approve:
@@ -476,6 +520,12 @@ class PlanningService:
                 approved.append(oid)
         if approved:
             order_repo.set_status_many(approved, OrderStatus.APPROVED)
+        dequeued = self._dequeue_orders(approved)
+        vehicle_repo = VehicleRepository(self._session)
+        for route in repo.list_routes_for_run(run_id):
+            route.route_status = "approved"
+            if route.vehicle_id is not None:
+                vehicle_repo.set_busy(route.vehicle_id, True)
 
         repo.approve_run(run_id, username=username)
         AuditLogRepository(self._session).record(
@@ -484,10 +534,162 @@ class PlanningService:
             details={
                 "run_id": run_id,
                 "approved_orders": len(approved),
+                "dequeued": dequeued,
                 "order_ids": approved[:50],
             },
         )
         return ApproveOutcome(run_id=run_id, approved_order_ids=tuple(approved))
+
+    def approve_route(self, *, run_id: int, vehicle_id: int, username: str) -> ApproveOutcome:
+        repo = AssignmentRepository(self._session)
+        run = repo.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        route = next(
+            (r for r in repo.list_routes_for_run(run_id) if r.vehicle_id == vehicle_id),
+            None,
+        )
+        if route is None:
+            raise ValueError("Nie znaleziono trasy dla zaznaczonego pojazdu.")
+        if route.route_status == "approved":
+            raise ValueError(f"Trasa {route.vehicle_code} jest już zatwierdzona.")
+        items = [
+            item
+            for item in repo.list_items_for_run(run_id)
+            if item.vehicle_id == vehicle_id
+            and item.sequence is not None
+            and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
+        ]
+        order_repo = OrderRepository(self._session)
+        approved: list[int] = []
+        for item in items:
+            order = order_repo.get_by_id(item.order_id)
+            if order is not None and order.status == OrderStatus.PLANNED:
+                approved.append(item.order_id)
+        if approved:
+            order_repo.set_status_many(approved, OrderStatus.APPROVED)
+        dequeued = self._dequeue_orders(approved)
+        route.route_status = "approved"
+        VehicleRepository(self._session).set_busy(vehicle_id, True)
+        self._sync_plan_status_from_routes(run_id, username=username)
+        AuditLogRepository(self._session).record(
+            username=username,
+            action="planning.approve_route",
+            details={
+                "run_id": run_id,
+                "vehicle_id": vehicle_id,
+                "vehicle_code": route.vehicle_code,
+                "approved_orders": len(approved),
+                "dequeued": dequeued,
+                "order_ids": approved[:50],
+            },
+        )
+        return ApproveOutcome(
+            run_id=run_id,
+            approved_order_ids=tuple(approved),
+            vehicle_id=vehicle_id,
+            vehicle_code=route.vehicle_code,
+        )
+
+    def unlock_route(self, *, run_id: int, vehicle_id: int, username: str) -> UnlockOutcome:
+        repo = AssignmentRepository(self._session)
+        run = repo.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        route = next(
+            (r for r in repo.list_routes_for_run(run_id) if r.vehicle_id == vehicle_id),
+            None,
+        )
+        if route is None:
+            raise ValueError("Nie znaleziono trasy dla zaznaczonego pojazdu.")
+        if route.route_status != "approved":
+            raise ValueError("Odblokować można tylko zatwierdzoną trasę.")
+        order_repo = OrderRepository(self._session)
+        reset: list[int] = []
+        for item in repo.list_items_for_run(run_id):
+            if item.vehicle_id != vehicle_id:
+                continue
+            if item.sequence is None or item.vehicle_code in {"UNASSIGNED", "UNROUTED"}:
+                continue
+            order = order_repo.get_by_id(item.order_id)
+            if order is not None and order.status in {OrderStatus.PLANNED, OrderStatus.APPROVED}:
+                reset.append(item.order_id)
+        if reset:
+            order_repo.set_status_many(reset, OrderStatus.NEW)
+        route.route_status = "proposed"
+        VehicleRepository(self._session).set_busy(vehicle_id, False)
+        self._sync_plan_status_from_routes(run_id, username=username)
+        AuditLogRepository(self._session).record(
+            username=username,
+            action="planning.unlock_route",
+            details={
+                "run_id": run_id,
+                "vehicle_id": vehicle_id,
+                "vehicle_code": route.vehicle_code,
+                "reset_orders": len(reset),
+                "order_ids": reset[:50],
+            },
+        )
+        return UnlockOutcome(
+            run_id=run_id,
+            reset_order_ids=tuple(reset),
+            vehicle_id=vehicle_id,
+            vehicle_code=route.vehicle_code,
+        )
+
+    def _dequeue_orders(self, order_ids: list[int]) -> int:
+        queue = WarehouseQueueRepository(self._session)
+        dequeued = 0
+        for oid in order_ids:
+            if queue.delete_by_order_id(oid):
+                dequeued += 1
+        return dequeued
+
+    def _reset_proposed_orders_to_new(self, run_id: int) -> list[int]:
+        repo = AssignmentRepository(self._session)
+        approved_vehicle_ids = {
+            r.vehicle_id
+            for r in repo.list_routes_for_run(run_id)
+            if r.route_status == "approved" and r.vehicle_id is not None
+        }
+        order_repo = OrderRepository(self._session)
+        reset: list[int] = []
+        for item in repo.list_items_for_run(run_id):
+            keep = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+                "UNASSIGNED",
+                "UNROUTED",
+            }
+            if keep:
+                continue
+            order = order_repo.get_by_id(item.order_id)
+            if order is not None and order.status == OrderStatus.PLANNED:
+                reset.append(item.order_id)
+        if reset:
+            order_repo.set_status_many(reset, OrderStatus.NEW)
+        return reset
+
+    def _sync_plan_status_from_routes(self, run_id: int, *, username: str) -> None:
+        repo = AssignmentRepository(self._session)
+        routes = repo.list_routes_for_run(run_id)
+        if not routes:
+            repo.set_run_status(run_id, plan_status="draft")
+            return
+        statuses = {r.route_status for r in routes}
+        if statuses == {"approved"}:
+            run = repo.get_run(run_id)
+            if run is not None and run.plan_status != "approved":
+                repo.approve_run(run_id, username=username)
+        elif "approved" in statuses:
+            repo.set_run_status(run_id, plan_status="partial")
+        else:
+            repo.set_run_status(run_id, plan_status="draft")
+
+    def _clear_busy_for_run(self, run_id: int) -> None:
+        repo = AssignmentRepository(self._session)
+        vehicle_repo = VehicleRepository(self._session)
+        for route in repo.list_routes_for_run(run_id):
+            if route.vehicle_id is not None:
+                vehicle_repo.set_busy(route.vehicle_id, False)
 
     def _routed_order_ids(self, run_id: int) -> list[int]:
         items = AssignmentRepository(self._session).list_items_for_run(run_id)
@@ -515,12 +717,15 @@ class PlanningService:
         run = repo.get_run(run_id)
         if run is None:
             raise ValueError(f"Plan run #{run_id} nie istnieje.")
-        if run.plan_status != "approved":
+        if run.plan_status not in {"approved", "partial"}:
             raise ValueError(
                 f"Plan run #{run_id} nie jest zatwierdzony (status: {run.plan_status})."
             )
 
         reset = self._reset_routed_orders_to_new(run_id)
+        for route in repo.list_routes_for_run(run_id):
+            route.route_status = "proposed"
+        self._clear_busy_for_run(run_id)
         repo.set_run_status(run_id, plan_status="draft")
         AuditLogRepository(self._session).record(
             username=username,
@@ -536,6 +741,7 @@ class PlanningService:
             raise ValueError(f"Plan run #{run_id} nie istnieje.")
 
         reset = self._reset_routed_orders_to_new(run_id)
+        self._clear_busy_for_run(run_id)
         repo.delete_run(run_id)
         AuditLogRepository(self._session).record(
             username=username,

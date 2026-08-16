@@ -53,6 +53,7 @@ class VehicleMapRoute:
     color: str
     distance_km: float | None
     cost_eur: float | None
+    route_status: str
     # Closed path: depot → drops in sequence → depot
     polyline: tuple[tuple[float, float], ...]
     markers: tuple[MapPoint, ...]
@@ -159,6 +160,7 @@ class MapViewService:
                     color=color,
                     distance_km=meta.distance_km if meta else None,
                     cost_eur=meta.cost_eur if meta else None,
+                    route_status=meta.route_status if meta is not None else "proposed",
                     polyline=tuple(path),
                     markers=tuple(markers),
                 )

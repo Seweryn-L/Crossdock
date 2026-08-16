@@ -107,14 +107,31 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
     for v in range(n_v):
         model.add(sum(weights[o] * x[o, v] for o in range(n_o)) <= caps[v])
 
+    max_drops = int(request.max_drops_per_route)
+    if max_drops >= 1:
+        by_id = {order.id: order for order in request.orders}
+        drop_keys = [(by_id[oid].drop_key or f"__order_{oid}") for oid in order_ids]
+        unique_keys = sorted(set(drop_keys))
+        key_index = {key: idx for idx, key in enumerate(unique_keys)}
+        used: dict[tuple[int, int], cp_model.IntVar] = {}
+        for d_idx in range(len(unique_keys)):
+            for v in range(n_v):
+                used[d_idx, v] = model.new_bool_var(f"used_{d_idx}_{v}")
+        for o in range(n_o):
+            d_idx = key_index[drop_keys[o]]
+            for v in range(n_v):
+                model.add(x[o, v] <= used[d_idx, v])
+        for v in range(n_v):
+            model.add(sum(used[d, v] for d in range(len(unique_keys))) <= max_drops)
+
     # Maximize assigned weight (FR-011).
     model.maximize(sum(weights[o] * x[o, v] for o in range(n_o) for v in range(n_v)))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(request.time_limit_s)
     solver.parameters.random_seed = int(request.seed)
-    # Keep pool warm-friendly on Windows; single worker is fine at this scale.
-    solver.parameters.num_search_workers = 4
+    # Single worker: reproducible results at this scale (AGENTS.md seed).
+    solver.parameters.num_search_workers = 1
 
     status_code = solver.solve(model)
     status_name = solver.status_name(status_code)

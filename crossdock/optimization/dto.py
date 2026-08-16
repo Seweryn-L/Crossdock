@@ -12,6 +12,7 @@ class SolverOrder:
     id: int
     delivery_code: str
     weight_kg: float
+    drop_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class AssignmentRequest:
     vehicles: tuple[SolverVehicle, ...]
     time_limit_s: float = 45.0
     seed: int = 42
+    max_drops_per_route: int = 0
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,48 @@ def test_order_exceeding_all_capacities_is_unassigned() -> None:
     assert result.assigned_order_ids == ()
 
 
+def test_max_drops_per_route_leaves_extra_city_unassigned() -> None:
+    request = AssignmentRequest(
+        orders=(
+            SolverOrder(id=1, delivery_code="A", weight_kg=1000, drop_key="paris"),
+            SolverOrder(id=2, delivery_code="B", weight_kg=1000, drop_key="brussels"),
+            SolverOrder(id=3, delivery_code="C", weight_kg=1000, drop_key="rotterdam"),
+            SolverOrder(id=4, delivery_code="D", weight_kg=1000, drop_key="berlin"),
+        ),
+        vehicles=(SolverVehicle(id=1, code="T1", weight_capacity_kg=12000),),
+        time_limit_s=5.0,
+        seed=42,
+        max_drops_per_route=3,
+    )
+    result = solve_assignment(request)
+    assert result.status in {"OPTIMAL", "FEASIBLE"}
+    assert len(result.assigned_order_ids) == 3
+    assert len(result.unassigned_order_ids) == 1
+    assigned_keys = {o.drop_key for o in request.orders if o.id in set(result.assigned_order_ids)}
+    assert len(assigned_keys) == 3
+
+
+def test_assignment_is_reproducible_with_same_seed() -> None:
+    request = AssignmentRequest(
+        orders=(
+            SolverOrder(id=1, delivery_code="A", weight_kg=2000, drop_key="p"),
+            SolverOrder(id=2, delivery_code="B", weight_kg=3000, drop_key="b"),
+            SolverOrder(id=3, delivery_code="C", weight_kg=2500, drop_key="r"),
+        ),
+        vehicles=(
+            SolverVehicle(id=10, code="T1", weight_capacity_kg=4000),
+            SolverVehicle(id=11, code="T2", weight_capacity_kg=4000),
+        ),
+        time_limit_s=5.0,
+        seed=42,
+        max_drops_per_route=3,
+    )
+    first = solve_assignment(request)
+    second = solve_assignment(request)
+    assert first.assigned_order_ids == second.assigned_order_ids
+    assert [load.order_ids for load in first.loads] == [load.order_ids for load in second.loads]
+
+
 def test_empty_orders() -> None:
     request = AssignmentRequest(
         orders=(),

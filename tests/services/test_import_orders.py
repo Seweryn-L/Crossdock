@@ -27,3 +27,16 @@ def test_import_orders_service_persists_company_file(db_session: Session) -> Non
         select(AuditLogRow).where(AuditLogRow.action == "orders.import")
     ).all()
     assert len(audits) == 1
+
+
+def test_reimport_skips_existing_delivery_codes(db_session: Session) -> None:
+    fixture = company_orders_fixture()
+    mapping = load_excel_column_mapping(MAPPING)
+    service = ImportOrdersService(db_session, mapping=mapping, default_delivery_days=7)
+    first = service.import_path(fixture, username="tester")
+    count_after_first = OrderRepository(db_session).count()
+    assert count_after_first == first.accepted_count
+    second = service.import_path(fixture, username="tester")
+    assert second.accepted_count == 0
+    assert OrderRepository(db_session).count() == count_after_first
+    assert any("już w bazie" in msg for msg in second.warnings)
