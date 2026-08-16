@@ -8,6 +8,7 @@ ORDER_STATUS_PL: dict[str, str] = {
     "new": "nowe",
     "planned": "zaplanowane",
     "approved": "zatwierdzone",
+    "delivered": "dostarczone",
 }
 
 PLAN_STATUS_PL: dict[str, str] = {
@@ -19,6 +20,7 @@ PLAN_STATUS_PL: dict[str, str] = {
 ROUTE_STATUS_PL: dict[str, str] = {
     "proposed": "propozycja",
     "approved": "zatwierdzona",
+    "completed": "zrealizowana",
 }
 
 QUEUE_STATUS_PL: dict[str, str] = {

@@ -589,23 +589,27 @@ class AssignmentRepository:
             self.refresh_run_totals(run.id)
         return run.id
 
-    def delete_proposed_payload(self, run_id: int) -> None:
-        """Drop proposed routes and non-approved items; keep approved routes."""
-        routes = self.list_routes_for_run(run_id)
-        approved_vehicle_ids = {
+    def terminal_vehicle_ids(self, run_id: int) -> set[int]:
+        """Vehicle ids on approved or completed routes (must not be rewritten)."""
+        return {
             r.vehicle_id
-            for r in routes
-            if r.route_status == "approved" and r.vehicle_id is not None
+            for r in self.list_routes_for_run(run_id)
+            if r.route_status in {"approved", "completed"} and r.vehicle_id is not None
         }
+
+    def delete_proposed_payload(self, run_id: int) -> None:
+        """Drop proposed routes and non-terminal items; keep approved/completed."""
+        routes = self.list_routes_for_run(run_id)
+        terminal_vehicle_ids = self.terminal_vehicle_ids(run_id)
         for item in self.list_items_for_run(run_id):
-            keep_approved = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+            keep_terminal = item.vehicle_id in terminal_vehicle_ids and item.vehicle_code not in {
                 "UNASSIGNED",
                 "UNROUTED",
             }
-            if not keep_approved:
+            if not keep_terminal:
                 self._session.delete(item)
         for route in routes:
-            if route.route_status != "approved":
+            if route.route_status not in {"approved", "completed"}:
                 self._session.delete(route)
         self._session.flush()
 
