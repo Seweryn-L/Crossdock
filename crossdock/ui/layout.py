@@ -721,6 +721,11 @@ body, .nicegui-content, .q-page, .q-layout {
   background: var(--cd-ride-bg) !important;
   border-left: 3px solid var(--cd-accent-solid) !important;
 }
+.ag-row.cd-row-completed {
+  background: var(--cd-surface) !important;
+  border-left: 3px solid var(--cd-muted) !important;
+  opacity: 0.92;
+}
 .ag-row.cd-row-proposed {
   background: var(--cd-card) !important;
 }

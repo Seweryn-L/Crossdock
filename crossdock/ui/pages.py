@@ -5,6 +5,7 @@ UI texts in Polish.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from datetime import datetime
@@ -20,7 +21,7 @@ from crossdock.services.app_settings import (
 )
 from crossdock.services.backup import run_backup
 from crossdock.services.buffering import accept_buffer_proposals, compute_buffer_proposals
-from crossdock.services.dashboard import collect_dashboard
+from crossdock.services.dashboard import collect_dashboard, list_in_progress_routes
 from crossdock.services.import_orders import ImportOrdersService, ImportOutcome
 from crossdock.services.locations import (
     apply_coords_to_existing_orders,
@@ -207,6 +208,37 @@ def _unlock_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int,
         return outcome.run_id, len(outcome.reset_order_ids), outcome.vehicle_code or "?"
 
 
+def _complete_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
+    with session_scope() as session:
+        outcome = PlanningService(session).complete_route(
+            run_id=run_id, vehicle_id=vehicle_id, username=username
+        )
+        return outcome.run_id, len(outcome.delivered_order_ids), outcome.vehicle_code or "?"
+
+
+def _confirm_complete_route(
+    *,
+    vehicle_code: str,
+    order_count: int,
+    on_confirm,
+) -> None:
+    with ui.dialog() as dialog, ui.card().classes("p-4 gap-3 min-w-[320px]"):
+        ui.label("Oznaczyć trasę jako zrealizowaną?").classes("font-medium")
+        ui.label(
+            f"Pojazd {vehicle_code} · {order_count} zleceń → dostarczone. "
+            "Pojazd wraca do puli; historia trasy zostaje."
+        ).classes("text-sm text-gray-700")
+
+        async def confirm() -> None:
+            dialog.close()
+            await on_confirm()
+
+        with ui.row().classes("gap-2 justify-end w-full"):
+            ui.button("Anuluj", on_click=dialog.close).props("flat")
+            ui.button("Zrealizowane", on_click=confirm).props("color=positive")
+    dialog.open()
+
+
 def _import_upload(path: Path, username: str) -> ImportOutcome:
     with session_scope() as session:
         return ImportOrdersService(session).import_path(path, username=username)
@@ -372,6 +404,29 @@ async def dashboard_page() -> None:
                 _set_active_run_id(run_id)
                 await refresh_dashboard()
 
+            async def on_complete_route(
+                run_id: int, vehicle_id: int, vehicle_code: str, order_count: int
+            ) -> None:
+                async def do_complete() -> None:
+                    try:
+                        rid, n_orders, code = await run.io_bound(
+                            _complete_route_job, run_id, vehicle_id, username
+                        )
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+                        return
+                    ui.notify(
+                        f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń).",
+                        type="positive",
+                    )
+                    await refresh_dashboard()
+
+                _confirm_complete_route(
+                    vehicle_code=vehicle_code,
+                    order_count=order_count,
+                    on_confirm=do_complete,
+                )
+
             host.clear()
             with host:
                 from crossdock.ui.ops_dashboard import render_ops_focus_dashboard
@@ -381,6 +436,7 @@ async def dashboard_page() -> None:
                     on_enqueue_staying=on_enqueue_staying,
                     open_map=open_map,
                     on_select_plan=on_select_plan,
+                    on_complete_route=on_complete_route,
                 )
 
         await refresh_dashboard()
@@ -717,6 +773,9 @@ async def plans_page() -> None:
                 approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
                     "color=positive outline"
                 )
+                complete_route_btn = ui.button("Zrealizowane", icon="local_shipping").props(
+                    "color=positive"
+                )
                 unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
                 unlock_btn = ui.button("Odblokuj cały plan", icon="restart_alt").props("outline")
                 delete_plan_btn = ui.button("Usuń plan", icon="delete").props(
@@ -799,7 +858,11 @@ async def plans_page() -> None:
                                     "domLayout": "normal",
                                     "rowClassRules": {
                                         "cd-row-approved": "data.route_status === 'approved'",
-                                        "cd-row-proposed": "data.route_status !== 'approved'",
+                                        "cd-row-completed": "data.route_status === 'completed'",
+                                        "cd-row-proposed": (
+                                            "data.route_status !== 'approved' && "
+                                            "data.route_status !== 'completed'"
+                                        ),
                                         "cd-row-lowfill": "data.below_min_fill === true",
                                     },
                                 }
@@ -1029,6 +1092,10 @@ async def plans_page() -> None:
             else:
                 approve_btn.disable()
                 approve_route_btn.disable()
+            if has_run and plan_status in {"approved", "partial"}:
+                complete_route_btn.enable()
+            else:
+                complete_route_btn.disable()
             if has_run:
                 unlock_route_btn.enable()
                 unlock_btn.enable()
@@ -1147,9 +1214,42 @@ async def plans_page() -> None:
             approve_btn.disable()
             target = ctx_now.get("latest_run_id")
             target_id = int(target) if isinstance(target, int) else None
+
+            with (
+                ui.dialog().props("persistent") as progress_dialog,
+                ui.card().classes("p-4 gap-3").style("min-width:min(92vw, 28rem);"),
+            ):
+                ui.label("Generowanie planu FTL").classes("text-lg font-medium")
+                progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full")
+                stage_label = ui.label("Przygotowanie danych…").classes("text-sm text-gray-700")
+                error_label = ui.label("").classes("text-sm text-red-700")
+                error_label.set_visibility(False)
+                close_btn = ui.button("Zamknij", on_click=progress_dialog.close).props("outline")
+                close_btn.set_visibility(False)
+
+            progress_dialog.open()
+            progress_timer: object | None = None
+
+            def _set_progress(value: float, stage: str) -> None:
+                progress_bar.set_value(max(0.0, min(1.0, value)))
+                stage_label.set_text(stage)
+
+            def _tick_solver_progress() -> None:
+                current = float(progress_bar.value or 0.0)
+                if current >= 0.9:
+                    return
+                progress_bar.set_value(min(0.9, current + 0.02))
+
             try:
+                _set_progress(0.1, "Przygotowanie danych…")
                 request = await run.io_bound(_prepare_plan_job, target_id, False)
+                _set_progress(0.2, "Optymalizacja tras…")
+                progress_timer = ui.timer(0.35, _tick_solver_progress)
                 prepared = await run.cpu_bound(solve_prepared_plan, request)
+                if progress_timer is not None:
+                    progress_timer.deactivate()  # type: ignore[attr-defined]
+                    progress_timer = None
+                _set_progress(0.95, "Zapisywanie planu…")
                 (
                     run_id,
                     _status,
@@ -1158,7 +1258,16 @@ async def plans_page() -> None:
                     unrouted,
                     warnings,
                 ) = await run.io_bound(_persist_plan_job, prepared, username)
+                _set_progress(1.0, "Gotowe")
+                await asyncio.sleep(0.35)
+                progress_dialog.close()
             except Exception as exc:
+                if progress_timer is not None:
+                    progress_timer.deactivate()  # type: ignore[attr-defined]
+                error_label.set_text(str(exc))
+                error_label.set_visibility(True)
+                stage_label.set_text("Przerwano z błędem.")
+                close_btn.set_visibility(True)
                 await refresh_plan_view()
                 ui.notify(str(exc), type="negative")
                 return
@@ -1205,6 +1314,52 @@ async def plans_page() -> None:
                 type="positive",
             )
             await refresh_plan_view()
+
+        async def on_complete_route() -> None:
+            run_id = ctx.get("latest_run_id")
+            if run_id is None:
+                ui.notify("Brak planu.", type="warning")
+                return
+            rows = await routes_grid.get_selected_rows()
+            if not rows:
+                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+                return
+            row = rows[0]
+            if str(row.get("route_status") or "") != "approved":
+                ui.notify("Zrealizować można tylko zatwierdzoną trasę.", type="warning")
+                return
+            vehicle_id = row.get("vehicle_id")
+            if vehicle_id is None:
+                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+                return
+            vehicle_code = str(row.get("vehicle") or "?")
+            riding_data = riding_grid.options.get("rowData") or []
+            matched = [
+                r
+                for r in riding_data
+                if str(r.get("vehicle") or "") == vehicle_code
+            ]
+            order_count = len(matched) if matched else int(row.get("drop_count") or 0)
+
+            async def do_complete() -> None:
+                try:
+                    rid, n_orders, code = await run.io_bound(
+                        _complete_route_job, int(run_id), int(vehicle_id), username
+                    )
+                except Exception as exc:
+                    ui.notify(f"Nie udało się oznaczyć trasy: {exc}", type="negative")
+                    return
+                ui.notify(
+                    f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń).",
+                    type="positive",
+                )
+                await refresh_plan_view()
+
+            _confirm_complete_route(
+                vehicle_code=vehicle_code,
+                order_count=order_count,
+                on_confirm=do_complete,
+            )
 
         async def on_unlock_route() -> None:
             run_id = ctx.get("latest_run_id")
@@ -1378,6 +1533,7 @@ async def plans_page() -> None:
         generate_btn.on_click(on_generate)
         approve_btn.on_click(on_approve)
         approve_route_btn.on_click(on_approve_route)
+        complete_route_btn.on_click(on_complete_route)
         unlock_route_btn.on_click(on_unlock_route)
         unlock_btn.on_click(on_unlock)
         delete_plan_btn.on_click(on_delete_plan)
@@ -1634,97 +1790,239 @@ async def warehouse_page() -> None:
     with page_frame("Magazyn"):
         ops_page_header(
             "Magazyn",
-            "Kolejka priorytetowa wydań i propozycja buforowania kosztowego. "
-            "Ręczny priorytet wydań (całe zlecenia).",
+            "Kolejka wydań, trasy w drodze i propozycja buforowania kosztowego.",
         )
-        with ui.element("div").classes("cd-ops-hero w-full"):
-            ui.label("Kolejka magazynowa").classes("font-bold")
 
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Dostępne zlecenia (nowe)").classes("text-sm font-medium")
-            enlarge_candidates_btn = ui.button("Powiększ", icon="open_in_full").props(
-                "flat dense no-caps"
-            )
-        candidates_host = ui.element("div").classes("cd-grid-host")
-        with candidates_host:
-            candidates_grid = (
-                ui.aggrid(
-                    {
-                        "columnDefs": [
-                            selection_column(multiple=True),
-                            {"headerName": "ID", "field": "order_id", "width": 80},
-                            {"headerName": "Kod", "field": "delivery_code", "filter": True},
-                            {"headerName": "Miasto", "field": "city", "filter": True},
-                            {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-                        ],
-                        "rowData": [],
-                        "rowSelection": "multiple",
-                        "suppressRowClickSelection": True,
-                        "domLayout": "normal",
-                    }
+        # --- A: Do kolejki ---
+        with ui.element("div").classes("cd-ops-panel w-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("Do kolejki").classes("text-sm font-medium")
+                    info_hint(
+                        "Zlecenia „nowe” poza kolejką magazynową — "
+                        "kandydaci do ręcznego priorytetu."
+                    )
+                enlarge_candidates_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
                 )
-                .classes("w-full")
-                .style("height: 200px")
+            candidates_host = ui.element("div").classes("cd-grid-host")
+            with candidates_host:
+                candidates_grid = (
+                    ui.aggrid(
+                        {
+                            "columnDefs": [
+                                selection_column(multiple=True),
+                                {"headerName": "ID", "field": "order_id", "width": 80},
+                                {"headerName": "Kod", "field": "delivery_code", "filter": True},
+                                {"headerName": "Miasto", "field": "city", "filter": True},
+                                {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                            ],
+                            "rowData": [],
+                            "rowSelection": "multiple",
+                            "suppressRowClickSelection": True,
+                            "domLayout": "normal",
+                        }
+                    )
+                    .classes("w-full")
+                    .style("height: 200px")
+                )
+            enlarge_candidates_btn.on_click(
+                attach_grid_enlarge(
+                    candidates_grid,
+                    candidates_host,
+                    title="Do kolejki",
+                    compact_height="200px",
+                )
             )
-        enlarge_candidates_btn.on_click(
-            attach_grid_enlarge(
-                candidates_grid,
-                candidates_host,
-                title="Dostępne zlecenia",
-                compact_height="200px",
+            with ui.row().classes("cd-toolbar"):
+                enqueue_btn = ui.button("Dodaj do kolejki", icon="playlist_add").props(
+                    "color=primary"
+                )
+                candidates_empty = ui.label(
+                    "Brak dostępnych zleceń „nowe” poza kolejką."
+                ).classes("text-sm text-gray-500")
+
+        # --- B: Kolejka wydań ---
+        with ui.element("div").classes("cd-ops-panel w-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("Kolejka wydań").classes("text-sm font-medium")
+                    info_hint(
+                        "Ręczna kolejka priorytetowa (całe zlecenia). "
+                        "Wstrzymane nie wchodzą do solvera."
+                    )
+                enlarge_queue_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
+                )
+            queue_host = ui.element("div").classes("cd-grid-host")
+            with queue_host:
+                grid = (
+                    ui.aggrid(
+                        {
+                            "columnDefs": [
+                                selection_column(multiple=False),
+                                {"headerName": "Poz.", "field": "position", "width": 70},
+                                {"headerName": "Kod", "field": "delivery_code", "filter": True},
+                                {"headerName": "Miasto", "field": "city"},
+                                {"headerName": "Waga [kg]", "field": "weight_kg"},
+                                {"headerName": "Status", "field": "status"},
+                                {"headerName": "ID", "field": "order_id", "width": 80},
+                            ],
+                            "rowData": [],
+                            "rowSelection": "single",
+                            "suppressRowClickSelection": True,
+                            "domLayout": "normal",
+                        }
+                    )
+                    .classes("w-full")
+                    .style("height: 240px")
+                )
+            enlarge_queue_btn.on_click(
+                attach_grid_enlarge(
+                    grid,
+                    queue_host,
+                    title="Kolejka wydań",
+                    compact_height="240px",
+                )
             )
-        )
-        with ui.row().classes("cd-toolbar"):
-            enqueue_btn = ui.button("Dodaj do kolejki", icon="playlist_add").props("color=primary")
-            candidates_empty = ui.label("Brak dostępnych zleceń „nowe” poza kolejką.").classes(
+            queue_empty = ui.label(
+                "Brak pozycji — dodaj zlecenie z listy powyżej lub z Planów."
+            ).classes("text-sm text-gray-500")
+            with ui.row().classes("cd-toolbar"):
+                ui.button("W górę", icon="arrow_upward", on_click=lambda: _move("up")).props(
+                    "outline"
+                )
+                ui.button(
+                    "W dół", icon="arrow_downward", on_click=lambda: _move("down")
+                ).props("outline")
+                ui.button("Wstrzymaj", on_click=lambda: _hold(True)).props("outline")
+                ui.button("Wznów", on_click=lambda: _hold(False)).props("outline")
+                ui.button("Usuń z kolejki", on_click=lambda: _remove()).props(
+                    "outline color=negative"
+                )
+                ui.button("Odśwież", on_click=lambda: refresh_all()).props("flat")
+
+        # --- C: W drodze ---
+        with ui.element("div").classes("cd-ops-panel w-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("W drodze").classes("text-sm font-medium")
+                    info_hint(
+                        "Zatwierdzone trasy aktywnego planu. "
+                        "Zrealizowane = dostarczone, pojazd wolny, historia zostaje."
+                    )
+                enlarge_road_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
+                )
+            road_host = ui.element("div").classes("cd-grid-host")
+            with road_host:
+                road_grid = (
+                    ui.aggrid(
+                        {
+                            "columnDefs": [
+                                selection_column(multiple=False),
+                                {"headerName": "Pojazd", "field": "vehicle", "filter": True},
+                                {
+                                    "headerName": "Zlecenia",
+                                    "field": "order_count",
+                                    "sortable": True,
+                                    "width": 110,
+                                },
+                                {"headerName": "Km", "field": "distance_km", "sortable": True},
+                                {"headerName": "Status", "field": "route_status_pl"},
+                                {"headerName": "ID poj.", "field": "vehicle_id", "width": 90},
+                                {"headerName": "Plan", "field": "run_id", "width": 80},
+                            ],
+                            "rowData": [],
+                            "rowSelection": "single",
+                            "suppressRowClickSelection": True,
+                            "domLayout": "normal",
+                        }
+                    )
+                    .classes("w-full")
+                    .style("height: 200px")
+                )
+            enlarge_road_btn.on_click(
+                attach_grid_enlarge(
+                    road_grid,
+                    road_host,
+                    title="W drodze",
+                    compact_height="200px",
+                )
+            )
+            road_empty = ui.label("Brak zatwierdzonych tras w drodze.").classes(
                 "text-sm text-gray-500"
             )
-
-        with ui.row().classes("w-full items-center justify-between mt-2"):
-            ui.label("Kolejka").classes("text-sm font-medium")
-            enlarge_queue_btn = ui.button("Powiększ", icon="open_in_full").props(
-                "flat dense no-caps"
-            )
-        queue_host = ui.element("div").classes("cd-grid-host")
-        with queue_host:
-            grid = (
-                ui.aggrid(
-                    {
-                        "columnDefs": [
-                            selection_column(multiple=False),
-                            {"headerName": "Poz.", "field": "position", "width": 70},
-                            {"headerName": "Kod", "field": "delivery_code", "filter": True},
-                            {"headerName": "Miasto", "field": "city"},
-                            {"headerName": "Waga [kg]", "field": "weight_kg"},
-                            {"headerName": "Status", "field": "status"},
-                            {"headerName": "ID", "field": "order_id", "width": 80},
-                        ],
-                        "rowData": [],
-                        "rowSelection": "single",
-                        "suppressRowClickSelection": True,
-                        "domLayout": "normal",
-                    }
+            with ui.row().classes("cd-toolbar"):
+                complete_road_btn = ui.button("Zrealizowane", icon="local_shipping").props(
+                    "color=positive"
                 )
-                .classes("w-full")
-                .style("height: 240px")
+
+        # --- D: Propozycja buforowania ---
+        with ui.element("div").classes("cd-ops-panel w-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("Propozycja buforowania").classes("text-sm font-medium")
+                    info_hint(
+                        "Sugestia kosztowa: przytrzymaj lub wyślij teraz. "
+                        "Nie miesza się z kolejką wydań."
+                    )
+                enlarge_buffer_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
+                )
+            buffer_summary = ui.label(
+                "Kliknij „Odśwież propozycję”, aby policzyć buforowanie kosztowe."
+            ).classes("text-sm text-gray-700")
+            buffer_decisions: dict[int, object] = {}
+            buffer_host = ui.element("div").classes("cd-grid-host")
+            with buffer_host:
+                buffer_grid = (
+                    ui.aggrid(
+                        {
+                            "columnDefs": [
+                                selection_column(multiple=True),
+                                {"headerName": "Kod", "field": "delivery_code"},
+                                {"headerName": "ID", "field": "order_id", "width": 80},
+                                {"headerName": "Decyzja", "field": "action"},
+                                {"headerName": "Dni", "field": "buffer_days"},
+                                {"headerName": "Oszczędność %", "field": "savings_pct"},
+                            ],
+                            "rowData": [],
+                            "rowSelection": "multiple",
+                            "suppressRowClickSelection": True,
+                            "domLayout": "normal",
+                        }
+                    )
+                    .classes("w-full")
+                    .style("height: 220px")
+                )
+            enlarge_buffer_btn.on_click(
+                attach_grid_enlarge(
+                    buffer_grid,
+                    buffer_host,
+                    title="Propozycja buforowania",
+                    compact_height="220px",
+                )
             )
-        enlarge_queue_btn.on_click(
-            attach_grid_enlarge(
-                grid,
-                queue_host,
-                title="Kolejka",
-                compact_height="240px",
-            )
-        )
-        queue_empty = ui.label(
-            "Brak pozycji — dodaj zlecenie z listy powyżej lub z Planów."
-        ).classes("text-sm text-gray-500")
+            with ui.row().classes("cd-toolbar"):
+                ui.button(
+                    "Odśwież propozycję",
+                    icon="calculate",
+                    on_click=lambda: refresh_buffer(),
+                ).props("outline")
+                ui.button(
+                    "Akceptuj zaznaczone",
+                    icon="check",
+                    on_click=lambda: on_accept_buffer(),
+                ).props("color=primary")
 
         async def refresh_all() -> None:
             try:
-                candidates, entries = await run.io_bound(_load_warehouse_view)
+                candidates, entries, road_routes = await run.io_bound(
+                    _load_warehouse_view, _active_run_id_from_storage()
+                )
             except Exception as exc:
-                ui.notify(f"Nie udało się wczytać kolejki: {exc}", type="negative")
+                ui.notify(f"Nie udało się wczytać magazynu: {exc}", type="negative")
                 return
             candidates_grid.options["rowData"] = [
                 {
@@ -1750,6 +2048,19 @@ async def warehouse_page() -> None:
             ]
             grid.update()
             queue_empty.set_visibility(len(entries) == 0)
+            road_grid.options["rowData"] = [
+                {
+                    "vehicle": r.vehicle_code,
+                    "order_count": r.order_count,
+                    "distance_km": round(r.distance_km, 1),
+                    "route_status_pl": route_status_pl("approved"),
+                    "vehicle_id": r.vehicle_id,
+                    "run_id": r.run_id,
+                }
+                for r in road_routes
+            ]
+            road_grid.update()
+            road_empty.set_visibility(len(road_routes) == 0)
 
         async def on_enqueue_selected() -> None:
             selected = await candidates_grid.get_selected_rows()
@@ -1774,26 +2085,6 @@ async def warehouse_page() -> None:
                 return None
             return int(rows[0]["order_id"])
 
-        with ui.row().classes("cd-toolbar"):
-            enqueue_btn.on_click(on_enqueue_selected)
-            ui.button(
-                "W górę",
-                icon="arrow_upward",
-                on_click=lambda: _move("up"),
-            ).props("outline")
-            ui.button(
-                "W dół",
-                icon="arrow_downward",
-                on_click=lambda: _move("down"),
-            ).props("outline")
-            ui.button("Wstrzymaj", on_click=lambda: _hold(True)).props("outline")
-            ui.button("Wznów", on_click=lambda: _hold(False)).props("outline")
-            ui.button(
-                "Usuń z kolejki",
-                on_click=lambda: _remove(),
-            ).props("outline color=negative")
-            ui.button("Odśwież", on_click=refresh_all).props("flat")
-
         async def _move(direction: str) -> None:
             oid = await _selected_order_id()
             if oid is None:
@@ -1816,45 +2107,36 @@ async def warehouse_page() -> None:
             ui.notify("Usunięto z kolejki.", type="positive")
             await refresh_all()
 
-        with ui.row().classes("w-full items-center justify-between mt-3"):
-            ui.label("Propozycja buforowania").classes("text-sm font-medium")
-            enlarge_buffer_btn = ui.button("Powiększ", icon="open_in_full").props(
-                "flat dense no-caps"
-            )
-        buffer_summary = ui.label(
-            "Kliknij „Odśwież propozycję”, aby policzyć buforowanie kosztowe."
-        ).classes("text-sm text-gray-700")
-        buffer_decisions: dict[int, object] = {}
-        buffer_host = ui.element("div").classes("cd-grid-host")
-        with buffer_host:
-            buffer_grid = (
-                ui.aggrid(
-                    {
-                        "columnDefs": [
-                            selection_column(multiple=True),
-                            {"headerName": "Kod", "field": "delivery_code"},
-                            {"headerName": "ID", "field": "order_id", "width": 80},
-                            {"headerName": "Decyzja", "field": "action"},
-                            {"headerName": "Dni", "field": "buffer_days"},
-                            {"headerName": "Oszczędność %", "field": "savings_pct"},
-                        ],
-                        "rowData": [],
-                        "rowSelection": "multiple",
-                        "suppressRowClickSelection": True,
-                        "domLayout": "normal",
-                    }
+        async def on_complete_road() -> None:
+            rows = await road_grid.get_selected_rows()
+            if not rows:
+                ui.notify("Zaznacz trasę w drodze.", type="warning")
+                return
+            row = rows[0]
+            run_id = int(row["run_id"])
+            vehicle_id = int(row["vehicle_id"])
+            vehicle_code = str(row.get("vehicle") or "?")
+            order_count = int(row.get("order_count") or 0)
+
+            async def do_complete() -> None:
+                try:
+                    rid, n_orders, code = await run.io_bound(
+                        _complete_route_job, run_id, vehicle_id, username
+                    )
+                except Exception as exc:
+                    ui.notify(str(exc), type="negative")
+                    return
+                ui.notify(
+                    f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń).",
+                    type="positive",
                 )
-                .classes("w-full")
-                .style("height: 220px")
+                await refresh_all()
+
+            _confirm_complete_route(
+                vehicle_code=vehicle_code,
+                order_count=order_count,
+                on_confirm=do_complete,
             )
-        enlarge_buffer_btn.on_click(
-            attach_grid_enlarge(
-                buffer_grid,
-                buffer_host,
-                title="Propozycja buforowania",
-                compact_height="220px",
-            )
-        )
 
         async def refresh_buffer() -> None:
             nonlocal buffer_decisions
@@ -1896,20 +2178,22 @@ async def warehouse_page() -> None:
             await refresh_all()
             await refresh_buffer()
 
-        with ui.row().classes("cd-toolbar"):
-            ui.button("Odśwież propozycję", icon="calculate", on_click=refresh_buffer).props(
-                "outline"
-            )
-            ui.button("Akceptuj zaznaczone", icon="check", on_click=on_accept_buffer).props(
-                "color=primary"
-            )
+        enqueue_btn.on_click(on_enqueue_selected)
+        complete_road_btn.on_click(on_complete_road)
 
+        # Initial warehouse panels (A/B/C).
+        # Buffer proposals (D) stay on-demand via toolbar.
         await refresh_all()
 
 
-def _load_warehouse_view():
+def _load_warehouse_view(run_id: int | None = None):
     with session_scope() as session:
-        return list_enqueue_candidates(session), list_queue(session)
+        resolved = AssignmentRepository(session).resolve_run_id(run_id)
+        return (
+            list_enqueue_candidates(session),
+            list_queue(session),
+            list_in_progress_routes(session, resolved),
+        )
 
 
 def _propose_buffer_job():

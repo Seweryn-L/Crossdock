@@ -377,3 +377,173 @@ def test_prepare_appends_only_to_target_draft(db_session: Session) -> None:
     request_first = service.prepare_plan_request(target_run_id=first.run_id)
     assert request_first.existing_run_id == first.run_id
     assert any(o.delivery_code == "A" for o in request_first.solver_orders)
+
+
+def test_complete_route_frees_vehicle_and_marks_delivered(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    vehicle_id = routes[0].vehicle_id
+    assert vehicle_id is not None
+    approved = service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    assert approved.approved_order_ids
+
+    completed = service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+    assert completed.vehicle_id == vehicle_id
+    assert set(completed.delivered_order_ids) == set(approved.approved_order_ids)
+    for oid in completed.delivered_order_ids:
+        order = OrderRepository(db_session).get_by_id(oid)
+        assert order is not None
+        assert order.status == OrderStatus.DELIVERED
+    vehicle = VehicleRepository(db_session).get(vehicle_id)
+    assert vehicle is not None
+    assert vehicle.is_busy is False
+    refreshed = next(
+        r
+        for r in AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+        if r.vehicle_id == vehicle_id
+    )
+    assert refreshed.route_status == "completed"
+    assert AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+
+    with pytest.raises(ValueError, match="zatwierdzoną"):
+        service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+    with pytest.raises(ValueError, match="zrealizowanej"):
+        service.unlock_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+
+
+def test_delivered_orders_excluded_from_prepare_and_run(db_session: Session) -> None:
+    _add_vehicle(db_session, code="T1")
+    order_a = _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    vehicle_id = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)[0].vehicle_id
+    assert vehicle_id is not None
+    service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+
+    request = service.prepare_plan_request()
+    assert all(o.id != order_a.id for o in request.solver_orders)
+    assert all(o.delivery_code != "A" for o in request.solver_orders)
+
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    again = service.run_plan(username="tester", force_new=True)
+    assert order_a.id not in again.planned_order_ids
+    still = OrderRepository(db_session).get_by_id(order_a.id)
+    assert still is not None
+    assert still.status == OrderStatus.DELIVERED
+
+
+def test_regenerate_partial_keeps_completed_routes(db_session: Session) -> None:
+    settings = _settings()
+    settings = settings.model_copy(update={"max_drops_per_route": 1})
+    _add_vehicle(db_session, code="T1")
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=settings)
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    assert len(routes) >= 2
+    vehicle_id = routes[0].vehicle_id
+    assert vehicle_id is not None
+    service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    completed = service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+    run = AssignmentRepository(db_session).get_run(plan.run_id)
+    assert run is not None
+    assert run.plan_status == "partial"
+    completed_items = {
+        item.order_id
+        for item in AssignmentRepository(db_session).list_items_for_run(plan.run_id)
+        if item.vehicle_id == vehicle_id and item.sequence is not None
+    }
+    assert set(completed.delivered_order_ids) == completed_items
+
+    _add_order(db_session, code="C", weight=1800, lat=51.92, lon=4.48)
+    again = service.run_plan(username="tester", target_run_id=plan.run_id)
+    assert again.run_id == plan.run_id
+    routes_after = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    completed_route = next(r for r in routes_after if r.vehicle_id == vehicle_id)
+    assert completed_route.route_status == "completed"
+    still = {
+        item.order_id
+        for item in AssignmentRepository(db_session).list_items_for_run(plan.run_id)
+        if item.vehicle_id == vehicle_id and item.sequence is not None
+    }
+    assert still == completed_items
+    for oid in completed_items:
+        order = OrderRepository(db_session).get_by_id(oid)
+        assert order is not None
+        assert order.status == OrderStatus.DELIVERED
+
+
+def test_unlock_plan_skips_delivered_and_completed_routes(db_session: Session) -> None:
+    settings = _settings()
+    settings = settings.model_copy(update={"max_drops_per_route": 1})
+    _add_vehicle(db_session, code="T1")
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=settings)
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    assert len(routes) >= 2
+    first_id = routes[0].vehicle_id
+    second_id = routes[1].vehicle_id
+    assert first_id is not None and second_id is not None
+    service.approve_route(run_id=plan.run_id, vehicle_id=first_id, username="approver")
+    delivered = service.complete_route(run_id=plan.run_id, vehicle_id=first_id, username="ops")
+    service.approve_route(run_id=plan.run_id, vehicle_id=second_id, username="approver")
+
+    unlocked = service.unlock_plan(run_id=plan.run_id, username="unlocker")
+    for oid in delivered.delivered_order_ids:
+        order = OrderRepository(db_session).get_by_id(oid)
+        assert order is not None
+        assert order.status == OrderStatus.DELIVERED
+        assert oid not in unlocked.reset_order_ids
+    routes_after = {
+        r.vehicle_id: r.route_status
+        for r in AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    }
+    assert routes_after[first_id] == "completed"
+    assert routes_after[second_id] == "proposed"
+    run = AssignmentRepository(db_session).get_run(plan.run_id)
+    assert run is not None
+    assert run.plan_status == "partial"
+
+
+def test_complete_route_marks_whole_orders_fr019(db_session: Session) -> None:
+    """FR-019: completing a route marks whole orders (not partial shipment splits)."""
+    _add_vehicle(db_session)
+    loc = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    dest = Location(name="Cust", city="Paris", country="FR", latitude=48.85, longitude=2.35)
+    multi = OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="MULTI",
+                shipments=[
+                    Shipment(shipment_number="S-1", weight_kg=1200),
+                    Shipment(shipment_number="S-2", weight_kg=800),
+                ],
+                pickup_location=loc,
+                delivery_location=dest,
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )[0]
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    vehicle_id = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)[0].vehicle_id
+    assert vehicle_id is not None
+    service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    completed = service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+    assert multi.id in completed.delivered_order_ids
+    refreshed = OrderRepository(db_session).get_by_id(multi.id)
+    assert refreshed is not None
+    assert refreshed.status == OrderStatus.DELIVERED
+    assert len(refreshed.shipments) == 2

@@ -27,6 +27,7 @@ def render_ops_focus_dashboard(
     on_enqueue_staying: Callable[[], Awaitable[Any] | Any],
     open_map: Callable[[], None],
     on_select_plan: Callable[[int], Awaitable[Any] | Any] | None = None,
+    on_complete_route: Callable[[int, int, str, int], Awaitable[Any] | Any] | None = None,
 ) -> None:
     """Paint the Ops Focus home layout inside an already-open page_frame."""
     plan_title = snap.plan_label or "Brak planu"
@@ -111,6 +112,57 @@ def render_ops_focus_dashboard(
                 "Pokaż na mapie",
                 on_click=open_map,
             ).props("outline color=primary no-caps")
+
+        with ui.element("div").classes("w-full mt-3 gap-2").style(
+            "display:flex;flex-direction:column;gap:0.5rem;"
+        ):
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label("Trasy w drodze").classes("text-sm font-medium")
+                info_hint(
+                    "Zatwierdzone trasy aktywnego planu — po powrocie oznacz Zrealizowane "
+                    "(zlecenia dostarczone, pojazd wolny, historia zostaje)."
+                )
+            routes = list(snap.in_progress_routes)
+            if not routes:
+                ui.label("Brak tras oczekujących na realizację.").classes(
+                    "text-sm text-gray-500"
+                )
+            else:
+                route_options = {
+                    str(r.vehicle_id): (
+                        f"{r.vehicle_code} · {r.order_count} zleceń · "
+                        f"{r.drops_summary} · {r.distance_km:.0f} km"
+                    )
+                    for r in routes
+                }
+                selected = ui.radio(route_options, value=next(iter(route_options))).props(
+                    "dense"
+                )
+                by_id = {r.vehicle_id: r for r in routes}
+
+                async def _on_complete_dash() -> None:
+                    if on_complete_route is None:
+                        return
+                    raw = selected.value
+                    if raw is None:
+                        ui.notify("Wybierz trasę.", type="warning")
+                        return
+                    route = by_id.get(int(raw))
+                    if route is None:
+                        ui.notify("Nie znaleziono trasy.", type="warning")
+                        return
+                    await on_complete_route(
+                        route.run_id,
+                        route.vehicle_id,
+                        route.vehicle_code,
+                        route.order_count,
+                    )
+
+                ui.button(
+                    "Zrealizowane",
+                    icon="local_shipping",
+                    on_click=_on_complete_dash,
+                ).props("color=positive no-caps")
 
     ui.html(
         "<div class='cd-ops-kpis'>"
