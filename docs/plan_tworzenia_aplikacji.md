@@ -4,6 +4,8 @@
 > Okres realizacji: **14.07.2026 → 15.09.2026** (9 tygodni)
 > Powiązane dokumenty: `stack_technologiczny.md`, `karta_projektu_i_wdrozenia.md`, `notatka_srs.md`
 
+**Stan na 13.08.2026:** kalendarz jest w **T5**; w kodzie zamknięte są **T1–T7** plus zatwierdzanie pojedynczych tras i polish UI. T8–T9 i Faza 2 (API, OSRM, GPS) otwarte. Bieżący opis systemu: [`stan_projektu.md`](stan_projektu.md).
+
 ---
 
 ## Założenia planu
@@ -69,19 +71,13 @@
 
 ## Zależności od zespołu (wejścia do planu)
 
-> **Status 20.07.2026:** T2 startuje bez finalnych danych od zespołu (placeholdery + fixture syntetyczny).
-> Śledzenie braków, ownerów i checklisty po dostarczeniu: [`otwarte_wejscia_zespolu.md`](otwarte_wejscia_zespolu.md).
-> Szczegółowy plan implementacji T2: [`plan_t2_implementacja.md`](plan_t2_implementacja.md).
-> Szczegółowy plan implementacji T3: [`plan_t3_implementacja.md`](plan_t3_implementacja.md).
-> Szczegółowy plan implementacji T4: [`plan_t4_implementacja.md`](plan_t4_implementacja.md).
-> Szczegółowy plan implementacji T5: [`plan_t5_implementacja.md`](plan_t5_implementacja.md).
-> Szczegółowy plan implementacji T6: [`plan_t6_implementacja.md`](plan_t6_implementacja.md).
+> **Status 13.08.2026:** braki zespołu nie blokują startu kodu. Śledzenie: [`otwarte_wejscia_zespolu.md`](otwarte_wejscia_zespolu.md). Obraz systemu: [`stan_projektu.md`](stan_projektu.md).
 
 | Wejście | Od kogo | Potrzebne najpóźniej | Blokuje | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| Tabela floty (typy, wymiary, palety, ładowność) | Martyna | T2 | Ekran floty (T2), model solvera (T3) | **brak — seed placeholder** |
-| Plik Excel marzec–kwiecień + instrukcja/lista braków raportu | Patryk | T2 | Parser importu (T2) | **sample e2open w fixtures podpięty; pełny okres + braki — od Patryka** |
-| Słownik kolumn raportu od firmy | Sandra | T2 | Mapowanie kolumn importu (T2) | **mapowanie empiryczne z pliku; potwierdzenie Sandry nadal mile widziane** |
-| Wstępne stawki kosztowe (km per typ pojazdu, doba magazynowania palety) | Sandra | T6 | Funkcja kosztu raportów (T6), reguła buforowania (T7) | czeka (T6) |
-| Scenariusz wzorcowy "dobry plan" do porównania | Patryk | T8 | Walidacja golden (T8) | czeka (T8) |
-| Odpowiedź firmy: skąd liczba palet w danych | firma / zespół | T3 | Pojemności w solverze (palety vs kg) | **brak — `pallet_count` opcjonalne** |
+| Tabela floty (typy, wymiary, palety, ładowność) | Martyna | T2 | Jakość modelu solvera | **W-03 DONE; liczby sztuk = UI** |
+| Plik Excel historyczny + lista braków raportu | Patryk | T2 | Kompletność importu | **sample + weekly maj–sie + arkusz 04–07 w `dane/`** |
+| Słownik kolumn raportu od firmy | Sandra | T2 | Oficjalne mapowanie | **empiryczne z pliku; czeka potwierdzenie (W-02)** |
+| Wstępne stawki kosztowe | Sandra | T6 | Raporty i FR-022 | **W-06 DONE = obecne stawki w Parametrach** |
+| Scenariusz wzorcowy „dobry plan” | Patryk | T8 | Testy golden | czeka (T8 / W-07) |
+| Skąd liczba palet w danych | firma / zespół | T3 | Constraint palet w solverze | **W-04 DONE jako szacunek warstwowy; kolumna Excela nieplanowana** |

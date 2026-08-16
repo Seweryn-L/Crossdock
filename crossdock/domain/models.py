@@ -84,8 +84,8 @@ class Location(BaseModel):
 class Vehicle(BaseModel):
     """Fleet vehicle with load capacities.
 
-    Seed capacities are PLACEHOLDER_PENDING_MARTYNA until the real fleet
-    table arrives (docs/otwarte_wejscia_zespolu.md W-03).
+    Capacities come from the fleet seed (config/fleet_seed.json).
+    ``is_busy`` is set when a route for this vehicle is approved (incremental planning).
     """
 
     id: int | None = None
@@ -94,7 +94,8 @@ class Vehicle(BaseModel):
     pallet_capacity: int = Field(gt=0)
     weight_capacity_kg: float = Field(gt=0)
     is_active: bool = True
-    is_placeholder: bool = True
+    is_placeholder: bool = False
+    is_busy: bool = False
 
 
 class Shipment(BaseModel):
@@ -119,6 +120,9 @@ class Order(BaseModel):
     delivery_location: Location
     delivery_date: date
     status: OrderStatus = OrderStatus.NEW
+    # Optional cargo denseness (kg per pallet). When set, pallet demand is
+    # independent of vehicle type: ceil(weight / kg_per_pallet).
+    kg_per_pallet: float | None = Field(default=None, gt=0)
 
     @classmethod
     def create(
@@ -131,6 +135,7 @@ class Order(BaseModel):
         delivery_date: date | None = None,
         default_delivery_days: int = DEFAULT_DELIVERY_DAYS,
         status: OrderStatus = OrderStatus.NEW,
+        kg_per_pallet: float | None = None,
     ) -> Order:
         """Create an order, applying the FR-024 default deadline.
 
@@ -146,6 +151,7 @@ class Order(BaseModel):
             delivery_location=delivery_location,
             delivery_date=delivery_date,
             status=status,
+            kg_per_pallet=kg_per_pallet,
         )
 
     @property

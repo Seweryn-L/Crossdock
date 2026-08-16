@@ -82,3 +82,8 @@ class TestOrderStructure:
     def test_negative_pallets_rejected(self) -> None:
         with pytest.raises(ValidationError):
             Shipment(shipment_number="S-1", pallet_count=-1)
+
+    def test_cargo_kg_per_pallet_optional(self) -> None:
+        assert make_order().kg_per_pallet is None
+        order = make_order(kg_per_pallet=250.0)
+        assert order.kg_per_pallet == 250.0

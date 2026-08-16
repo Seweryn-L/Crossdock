@@ -11,6 +11,8 @@
 | **Pliki źródłowe** | [notatki_z_spotkania_z_firma.txt](file:///d:/ja/TY100/Zadanie1/spotkanie1/notatki_z_spotkania_z_firma.txt), [wymagania.txt](file:///d:/ja/TY100/Zadanie1/spotkanie1/wymagania.txt) |
 | **Data opracowania** | 14.07.2026 |
 
+Kolumna **Status** w tabelach FR/NFR oznacza, że wymaganie zostało **potwierdzone ze źródeł**, a nie że jest zaimplementowane. Stan kodu: [`stan_projektu.md`](stan_projektu.md).
+
 ---
 
 ## 2. Cel i kontekst biznesowy

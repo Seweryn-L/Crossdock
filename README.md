@@ -8,27 +8,29 @@ planowanie transportów FTL (OR-Tools), wizualizacja tras na mapie, raporty efek
 
 | Plik | Zawartość |
 | :--- | :--- |
-| [docs/stack_technologiczny.md](docs/stack_technologiczny.md) | Uzgodniony stack: technologie, licencje, decyzje architektoniczne, odrzucone opcje |
-| [docs/plan_tworzenia_aplikacji.md](docs/plan_tworzenia_aplikacji.md) | Harmonogram tygodniowy (14.07 → 15.09.2026) z kamieniami milowymi |
-| [docs/plan_t2_implementacja.md](docs/plan_t2_implementacja.md) | Szczegółowy plan implementacji tygodnia 2 (import, flota, haversine) |
-| [docs/plan_t3_implementacja.md](docs/plan_t3_implementacja.md) | Szczegółowy plan implementacji tygodnia 3 (CP-SAT przydział) |
-| [docs/otwarte_wejscia_zespolu.md](docs/otwarte_wejscia_zespolu.md) | Brakujące dane od zespołu (Patryk/Sandra/Martyna) + checklista podmiany |
-| [docs/walkthrough_t2.md](docs/walkthrough_t2.md) | Postęp T2: co działa, jak przetestować |
-| [docs/walkthrough_t3.md](docs/walkthrough_t3.md) | Postęp T3: przydział CP-SAT |
-| [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania funkcjonalne (FR) i niefunkcjonalne (NFR) |
-| [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Karta projektu: infrastruktura, zespół, fazy wdrożenia |
-| [AGENTS.md](AGENTS.md) | Reguły dla agentów AI piszących kod w tym repozytorium |
+| **[docs/stan_projektu.md](docs/stan_projektu.md)** | **Aktualny stan (13.08.2026): co działa, czego brak, co dalej** |
+| [docs/plan_tworzenia_aplikacji.md](docs/plan_tworzenia_aplikacji.md) | Harmonogram tygodniowy (14.07 → 15.09.2026) |
+| [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania FR / NFR |
+| [docs/stack_technologiczny.md](docs/stack_technologiczny.md) | Stack, licencje, decyzje, odrzucone opcje |
+| [docs/otwarte_wejscia_zespolu.md](docs/otwarte_wejscia_zespolu.md) | Dane od Patryka / Sandry / Martyny |
+| [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Infrastruktura, zespół, fazy wdrożenia |
+| [docs/walkthrough_incremental_routes.md](docs/walkthrough_incremental_routes.md) | Scenariusz demo: import tygodnia → zatwierdź trasę |
+| [AGENTS.md](AGENTS.md) | Reguły dla agentów AI w tym repo |
+
+Plany i walkthrough T1–T7 w `docs/` to **historia tygodni**, nie bieżący status.
 
 ## Struktura
 
 ```
-crossdock/            # pakiet aplikacji (powstanie w T1 planu)
-docs/                 # dokumentacja projektowa (kopie robocze)
+crossdock/            # pakiet aplikacji (domain, optimization, ingest, storage, services, ui)
+config/               # mapowanie Excela, seed floty, współrzędne
+docs/                 # dokumentacja (stan_projektu.md = teraz)
 tests/fixtures/       # przykładowe dane z TMS e2open (.xlsx)
+dane/                 # robocze pliki z Drive zespołu (nie sekrety)
 data/                 # baza SQLite, logi — poza gitem
 ```
 
-## Uruchomienie (od T1)
+## Uruchomienie
 
 ```powershell
 uv sync          # instalacja środowiska z lockfile

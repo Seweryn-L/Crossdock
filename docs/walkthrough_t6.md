@@ -1,5 +1,6 @@
 # Tydzień 6 — Walkthrough (raporty + magazyn + palety)
 
+> Dokument historyczny (stan na koniec T6). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
 > Plan: [`plan_t6_implementacja.md`](plan_t6_implementacja.md)
 
 ## Zrobione

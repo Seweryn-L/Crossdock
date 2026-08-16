@@ -50,6 +50,7 @@ def _to_domain_vehicle(row: VehicleRow) -> Vehicle:
         weight_capacity_kg=row.weight_capacity_kg,
         is_active=row.is_active,
         is_placeholder=row.is_placeholder,
+        is_busy=bool(getattr(row, "is_busy", False)),
     )
 
 
@@ -83,6 +84,7 @@ def _to_domain_order(row: OrderRow) -> Order:
         ),
         delivery_date=row.delivery_date,
         status=OrderStatus(row.status),
+        kg_per_pallet=getattr(row, "kg_per_pallet", None),
     )
 
 
@@ -157,6 +159,7 @@ class OrderRepository:
                 delivery_longitude=order.delivery_location.longitude,
                 delivery_date=order.delivery_date,
                 status=order.status.value,
+                kg_per_pallet=order.kg_per_pallet,
                 shipments=[
                     ShipmentRow(
                         shipment_number=s.shipment_number,
@@ -230,9 +233,9 @@ class OrderRepository:
         self._session.flush()
         return len(rows)
 
-    def update_order_pallets(self, order_id: int, total_pallets: int) -> Order:
-        """Set order total pallets on first shipment; others → 0 (FR-021 MVP)."""
-        if total_pallets < 0:
+    def update_order_pallets(self, order_id: int, total_pallets: int | None) -> Order:
+        """Set order total pallets on first shipment; others → 0. None clears."""
+        if total_pallets is not None and total_pallets < 0:
             raise ValueError("Liczba palet nie może być ujemna.")
         row = self._session.scalar(
             select(OrderRow)
@@ -244,7 +247,25 @@ class OrderRepository:
         if not row.shipments:
             raise ValueError(f"Zlecenie #{order_id} nie ma przesyłek.")
         for idx, shipment in enumerate(row.shipments):
-            shipment.pallet_count = total_pallets if idx == 0 else 0
+            if total_pallets is None:
+                shipment.pallet_count = None
+            else:
+                shipment.pallet_count = total_pallets if idx == 0 else 0
+        self._session.flush()
+        return _to_domain_order(row)
+
+    def update_order_kg_per_pallet(self, order_id: int, kg_per_pallet: float | None) -> Order:
+        """Set or clear cargo denseness (kg per pallet) on the order."""
+        if kg_per_pallet is not None and kg_per_pallet <= 0:
+            raise ValueError("kg / paleta musi być większe od zera.")
+        row = self._session.scalar(
+            select(OrderRow)
+            .options(selectinload(OrderRow.shipments))
+            .where(OrderRow.id == order_id)
+        )
+        if row is None:
+            raise ValueError(f"Zlecenie #{order_id} nie istnieje.")
+        row.kg_per_pallet = kg_per_pallet
         self._session.flush()
         return _to_domain_order(row)
 
@@ -263,12 +284,41 @@ class VehicleRepository:
         ).all()
         return [_to_domain_vehicle(r) for r in rows]
 
+    def list_available(self) -> list[Vehicle]:
+        """Active vehicles not locked by an approved route."""
+        rows = self._session.scalars(
+            select(VehicleRow)
+            .where(VehicleRow.is_active.is_(True), VehicleRow.is_busy.is_(False))
+            .order_by(VehicleRow.code)
+        ).all()
+        return [_to_domain_vehicle(r) for r in rows]
+
+    def set_busy(self, vehicle_id: int, *, busy: bool) -> Vehicle | None:
+        row = self._session.get(VehicleRow, vehicle_id)
+        if row is None:
+            return None
+        row.is_busy = busy
+        self._session.flush()
+        return _to_domain_vehicle(row)
+
     def count(self) -> int:
         return len(self._session.scalars(select(VehicleRow.id)).all())
+
+    def get_by_id(self, vehicle_id: int) -> Vehicle | None:
+        row = self._session.get(VehicleRow, vehicle_id)
+        return _to_domain_vehicle(row) if row else None
 
     def get_by_code(self, code: str) -> Vehicle | None:
         row = self._session.scalar(select(VehicleRow).where(VehicleRow.code == code))
         return _to_domain_vehicle(row) if row else None
+
+    def list_by_type(self, vehicle_type: VehicleType) -> list[Vehicle]:
+        rows = self._session.scalars(
+            select(VehicleRow)
+            .where(VehicleRow.vehicle_type == vehicle_type.value)
+            .order_by(VehicleRow.code)
+        ).all()
+        return [_to_domain_vehicle(r) for r in rows]
 
     def add(self, vehicle: Vehicle) -> Vehicle:
         row = VehicleRow(
@@ -278,6 +328,7 @@ class VehicleRepository:
             weight_capacity_kg=vehicle.weight_capacity_kg,
             is_active=vehicle.is_active,
             is_placeholder=vehicle.is_placeholder,
+            is_busy=vehicle.is_busy,
         )
         self._session.add(row)
         self._session.flush()
@@ -295,6 +346,7 @@ class VehicleRepository:
         row.weight_capacity_kg = vehicle.weight_capacity_kg
         row.is_active = vehicle.is_active
         row.is_placeholder = vehicle.is_placeholder
+        row.is_busy = vehicle.is_busy
         self._session.flush()
         return _to_domain_vehicle(row)
 
@@ -518,10 +570,209 @@ class AssignmentRepository:
                     drop_count=int(route["drop_count"]),
                     distance_km=float(route["distance_km"]),
                     cost_eur=float(route["cost_eur"]),
+                    route_status=str(route.get("route_status") or "proposed"),
                 )
             )
         self._session.flush()
         return run.id
+
+    def ensure_open_run(self, *, username: str) -> AssignmentRunRow:
+        """Return latest run or create an empty draft run for incremental planning."""
+        latest = self.get_latest_run()
+        if latest is not None:
+            return latest
+        run = AssignmentRunRow(
+            username=username,
+            status="EMPTY",
+            wall_time_s=0.0,
+            unassigned_count=0,
+            warnings_json=None,
+            plan_status="draft",
+            total_distance_km=0.0,
+            total_cost_eur=0.0,
+        )
+        self._session.add(run)
+        self._session.flush()
+        return run
+
+    def clear_proposed(self, run_id: int) -> list[int]:
+        """Delete proposed routes and non-approved items. Returns order ids cleared."""
+        routes = self.list_routes_for_run(run_id)
+        approved_codes = {
+            r.vehicle_code for r in routes if (r.route_status or "proposed") == "approved"
+        }
+        cleared_orders: list[int] = []
+        for item in self.list_items_for_run(run_id):
+            keep = (
+                item.vehicle_code in approved_codes
+                and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
+            )
+            if keep:
+                continue
+            cleared_orders.append(item.order_id)
+            self._session.delete(item)
+        for route in routes:
+            if (route.route_status or "proposed") != "approved":
+                self._session.delete(route)
+        self._session.flush()
+        return cleared_orders
+
+    def append_proposed_plan(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        wall_time_s: float,
+        warnings: list[str],
+        items: list[dict[str, Any]],
+        routes: list[dict[str, Any]],
+        unassigned_order_ids: list[int],
+        order_meta: dict[int, tuple[str, float]],
+        total_distance_km: float,
+        total_cost_eur: float,
+    ) -> int:
+        """Append newly generated proposed routes/items onto an existing run."""
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+
+        for item in items:
+            order_id = int(item["order_id"])
+            code, weight = order_meta.get(order_id, ("?", 0.0))
+            self._session.add(
+                AssignmentItemRow(
+                    run_id=run.id,
+                    vehicle_id=item.get("vehicle_id"),
+                    vehicle_code=str(item["vehicle_code"]),
+                    order_id=order_id,
+                    delivery_code=code,
+                    weight_kg=weight,
+                    fill_ratio=item.get("fill_ratio"),
+                    sequence=item.get("sequence"),
+                    drop_key=item.get("drop_key"),
+                )
+            )
+        for order_id in unassigned_order_ids:
+            code, weight = order_meta.get(order_id, ("?", 0.0))
+            self._session.add(
+                AssignmentItemRow(
+                    run_id=run.id,
+                    vehicle_id=None,
+                    vehicle_code="UNASSIGNED",
+                    order_id=order_id,
+                    delivery_code=code,
+                    weight_kg=weight,
+                    fill_ratio=None,
+                    sequence=None,
+                    drop_key=None,
+                )
+            )
+        for route in routes:
+            self._session.add(
+                AssignmentRouteRow(
+                    run_id=run.id,
+                    vehicle_id=route.get("vehicle_id"),
+                    vehicle_code=str(route["vehicle_code"]),
+                    drop_count=int(route["drop_count"]),
+                    distance_km=float(route["distance_km"]),
+                    cost_eur=float(route["cost_eur"]),
+                    route_status="proposed",
+                )
+            )
+
+        # Recompute totals including approved routes.
+        all_routes = self.list_routes_for_run(run_id)
+        run.status = status
+        run.wall_time_s = wall_time_s
+        run.warnings_json = json.dumps(warnings, ensure_ascii=False) if warnings else None
+        run.unassigned_count = len(unassigned_order_ids)
+        run.total_distance_km = sum(r.distance_km for r in all_routes)
+        run.total_cost_eur = sum(r.cost_eur for r in all_routes)
+        # Prefer explicit new totals if all_routes was empty before flush of new ones:
+        if not all_routes:
+            run.total_distance_km = total_distance_km
+            run.total_cost_eur = total_cost_eur
+        self._session.flush()
+        # After flush, re-sum
+        all_routes = self.list_routes_for_run(run_id)
+        run.total_distance_km = sum(r.distance_km for r in all_routes)
+        run.total_cost_eur = sum(r.cost_eur for r in all_routes)
+        self.refresh_plan_status(run_id)
+        self._session.flush()
+        return run.id
+
+    def get_route(self, run_id: int, vehicle_id: int) -> AssignmentRouteRow | None:
+        return self._session.scalar(
+            select(AssignmentRouteRow).where(
+                AssignmentRouteRow.run_id == run_id,
+                AssignmentRouteRow.vehicle_id == vehicle_id,
+            )
+        )
+
+    def approve_route(
+        self, run_id: int, vehicle_id: int, *, username: str
+    ) -> AssignmentRouteRow:
+        from datetime import UTC, datetime
+
+        route = self.get_route(run_id, vehicle_id)
+        if route is None:
+            raise ValueError(f"Brak trasy pojazdu #{vehicle_id} w planie #{run_id}.")
+        if (route.route_status or "proposed") == "approved":
+            raise ValueError(f"Trasa pojazdu {route.vehicle_code} jest już zatwierdzona.")
+        route.route_status = "approved"
+        route.approved_at = datetime.now(UTC).replace(tzinfo=None)
+        route.approved_by = username
+        self.refresh_plan_status(run_id)
+        self._session.flush()
+        return route
+
+    def unlock_route(self, run_id: int, vehicle_id: int) -> AssignmentRouteRow:
+        route = self.get_route(run_id, vehicle_id)
+        if route is None:
+            raise ValueError(f"Brak trasy pojazdu #{vehicle_id} w planie #{run_id}.")
+        if (route.route_status or "proposed") != "approved":
+            raise ValueError(f"Trasa pojazdu {route.vehicle_code} nie jest zatwierdzona.")
+        route.route_status = "proposed"
+        route.approved_at = None
+        route.approved_by = None
+        self.refresh_plan_status(run_id)
+        self._session.flush()
+        return route
+
+    def refresh_plan_status(self, run_id: int) -> str:
+        run = self.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        routes = self.list_routes_for_run(run_id)
+        if not routes:
+            run.plan_status = "draft"
+            run.approved_at = None
+            run.approved_by = None
+            return run.plan_status
+        approved = sum(1 for r in routes if (r.route_status or "proposed") == "approved")
+        if approved == 0:
+            run.plan_status = "draft"
+            run.approved_at = None
+            run.approved_by = None
+        elif approved == len(routes):
+            run.plan_status = "approved"
+        else:
+            run.plan_status = "partial"
+            run.approved_at = None
+            run.approved_by = None
+        return run.plan_status
+
+    def list_order_ids_for_vehicle(self, run_id: int, vehicle_id: int) -> list[int]:
+        route = self.get_route(run_id, vehicle_id)
+        if route is None:
+            return []
+        return [
+            item.order_id
+            for item in self.list_items_for_run(run_id)
+            if item.vehicle_id == vehicle_id
+            and item.sequence is not None
+            and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
+        ]
 
     def get_latest_run_id(self) -> int | None:
         row = self._session.scalar(

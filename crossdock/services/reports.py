@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
 from crossdock.distance.haversine import HaversineDistanceProvider
+from crossdock.services.pallet_demand import demand_on_vehicle
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 
 
@@ -23,6 +24,10 @@ class UtilizationRow:
     fill_ratio: float | None
     order_count: int
     total_weight_kg: float
+    total_pallets: int = 0
+    pallet_capacity: int | None = None
+    pallet_fill_ratio: float | None = None
+    route_status: str = "proposed"
 
 
 @dataclass(frozen=True)
@@ -88,18 +93,22 @@ def build_report(
     for route in routes:
         v_items = items_by_vehicle.get(route.vehicle_code, [])
         total_weight = sum(i.weight_kg for i in v_items)
+        vehicle = vehicles.get_by_code(route.vehicle_code)
         fill: float | None = None
         if v_items and v_items[0].fill_ratio is not None:
             fill = float(v_items[0].fill_ratio)
-        else:
-            vehicle = None
-            if route.vehicle_id is not None:
-                # lookup by code as fallback
-                vehicle = vehicles.get_by_code(route.vehicle_code)
-            elif route.vehicle_code:
-                vehicle = vehicles.get_by_code(route.vehicle_code)
-            if vehicle is not None and vehicle.weight_capacity_kg > 0:
-                fill = total_weight / vehicle.weight_capacity_kg
+        elif vehicle is not None and vehicle.weight_capacity_kg > 0:
+            fill = total_weight / vehicle.weight_capacity_kg
+        total_pallets = 0
+        pallet_cap: int | None = vehicle.pallet_capacity if vehicle is not None else None
+        pallet_fill: float | None = None
+        if vehicle is not None:
+            for item in v_items:
+                order = orders.get_by_id(item.order_id)
+                if order is not None:
+                    total_pallets += demand_on_vehicle(order, vehicle, cfg)
+            if pallet_cap and pallet_cap > 0:
+                pallet_fill = total_pallets / pallet_cap
         utilization.append(
             UtilizationRow(
                 vehicle_code=route.vehicle_code,
@@ -109,6 +118,10 @@ def build_report(
                 fill_ratio=fill,
                 order_count=len(v_items),
                 total_weight_kg=total_weight,
+                total_pallets=total_pallets,
+                pallet_capacity=pallet_cap,
+                pallet_fill_ratio=pallet_fill,
+                route_status=(route.route_status or "proposed"),
             )
         )
 
@@ -146,8 +159,8 @@ def build_report(
             savings_pct=round(savings_pct, 1),
             routed_orders=routed_count,
             note=(
-                "Baseline: 1 zlecenie = 1 pojazd (2x km depot-drop x cost_per_km). "
-                "Stawki Sandry (W-06) — placeholder."
+                "Baseline: 1 zlecenie = 1 pojazd (2x km depot-drop x stawka EUR/km "
+                "z Ustawienia -> Parametry)."
             ),
         ),
         warnings=tuple(warnings),
@@ -159,16 +172,22 @@ def export_report_xlsx(bundle: ReportBundle) -> bytes:
     from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-untyped]
     from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
-    from crossdock.text_pl import plan_status_pl
+    from crossdock.text_pl import plan_status_pl, route_status_pl
 
     util_rows = [
         {
             "Pojazd": row.vehicle_code,
+            "Status trasy": route_status_pl(row.route_status),
             "Punkty rozładunku": row.drop_count,
             "Zlecenia": row.order_count,
             "Waga [kg]": round(row.total_weight_kg, 1),
-            "Zapełnienie [%]": (
+            "Palety": row.total_pallets,
+            "Pojemność palet": row.pallet_capacity,
+            "Zapełnienie wagowe [%]": (
                 round(row.fill_ratio * 100, 1) if row.fill_ratio is not None else None
+            ),
+            "Zapełnienie palet [%]": (
+                round(row.pallet_fill_ratio * 100, 1) if row.pallet_fill_ratio is not None else None
             ),
             "Km": round(row.distance_km, 1),
             "Koszt €": round(row.cost_eur, 2),

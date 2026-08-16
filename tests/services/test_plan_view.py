@@ -33,12 +33,12 @@ def _settings(**kwargs: object) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
-def _add_vehicle(session: Session, *, weight: float = 12000) -> None:
+def _add_vehicle(session: Session, *, weight: float = 12000, pallets: int = 33) -> None:
     VehicleRepository(session).add(
         Vehicle(
             code="T1",
             vehicle_type=VehicleType.TRUCK,
-            pallet_capacity=10,
+            pallet_capacity=pallets,
             weight_capacity_kg=weight,
             is_placeholder=False,
         )
@@ -90,7 +90,7 @@ def test_classify_item_buckets() -> None:
 
 def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
     # Capacity for ~2 orders of 2000; third stays UNASSIGNED
-    _add_vehicle(db_session, weight=4500)
+    _add_vehicle(db_session, weight=4500, pallets=6)
     _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
     _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
     _add_order(db_session, code="C", weight=2000, lat=51.92, lon=4.48)
@@ -105,6 +105,12 @@ def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
     assert "zostaje w magazynie" in view.summary.to_polish()
     for row in view.staying:
         assert row["reason"] == REASON_STAYING
+    for row in view.riding:
+        assert isinstance(row["pallets"], int)
+        assert row["pallets"] > 0
+    for route in view.routes:
+        assert "pallets" in route
+        assert "pallet_fill" in route
 
 
 def test_build_plan_view_attention_unrouted(db_session: Session) -> None:

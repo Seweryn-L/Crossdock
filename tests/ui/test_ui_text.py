@@ -39,6 +39,11 @@ def test_polish_labels_are_intact() -> None:
     assert "haversine" not in pages
     assert "(placeholder)" not in pages
     assert "Wczytaj seed" not in pages
+    assert "czeka na Martynę" not in pages
+    assert "czeka na Sandrę" not in pages
+    assert "brak palet w Excelu" not in pages
+    assert "Domyślne kg / paleta towaru" in pages
+    assert "kg / paleta" in pages
     dashboard = (UI_DIR / "ops_dashboard.py").read_text(encoding="utf-8")
     assert "Jedzie (trasy)" in dashboard
     assert "Zostaje w magazynie" in dashboard

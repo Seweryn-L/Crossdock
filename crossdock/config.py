@@ -28,6 +28,10 @@ EDITABLE_SETTING_KEYS: frozenset[str] = frozenset(
         "ltl_cost_multiplier",
         "buffer_savings_threshold",
         "max_buffer_days",
+        "default_kg_per_pallet",
+        "kg_per_pallet_bus",
+        "kg_per_pallet_truck",
+        "kg_per_pallet_curtain",
         "upload_max_mb",
         "backup_keep",
         "backup_hour",
@@ -51,7 +55,7 @@ class Settings(BaseSettings):
     port: int = 8080
     session_max_idle_minutes: int = 60
     default_delivery_days: int = 7
-    # Excel column mapping — placeholder until Sandra's dictionary (W-02).
+    # Excel column mapping (empirical; official dictionary is W-02).
     excel_mapping_path: Path = Path("config/excel_column_mapping.json")
     upload_max_mb: int = 20
     # Cross-dock depot approx. Herentals / ~30 km from Antwerp (MVP seed).
@@ -63,13 +67,18 @@ class Settings(BaseSettings):
     # CP-SAT assignment (T3) — hard time limit + seed for reproducibility.
     solver_time_limit_s: float = 45.0
     solver_seed: int = 42
-    # Placeholder freight rate until Sandra's rates (W-06); used for plan cost display.
+    # Freight / buffer rates — editable in Ustawienia → Parametry.
     cost_per_km: float = 1.2
-    # FR-022 buffering placeholders (W-06) — replace after Sandra's rates.
     buffer_savings_threshold: float = 0.15
     storage_cost_per_pallet_day: float = 2.0
     ltl_cost_multiplier: float = 1.8
     max_buffer_days: int = 3
+    # Pallet denseness: cargo default (layer 3) and per vehicle type (layer 2).
+    # Type defaults match fleet_seed.json (bus 1050/8, FTL 24500/33).
+    default_kg_per_pallet: float = 24500.0 / 33.0
+    kg_per_pallet_bus: float = 1050.0 / 8.0
+    kg_per_pallet_truck: float = 24500.0 / 33.0
+    kg_per_pallet_curtain: float = 24500.0 / 33.0
     backup_dir: Path = Path("data/backups")
     backup_keep: int = 14
     backup_hour: int = 2

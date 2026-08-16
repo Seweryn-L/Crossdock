@@ -1,5 +1,6 @@
 # Tydzień 5 — Walkthrough (mapa tras)
 
+> Dokument historyczny (stan na koniec T5 w kodzie). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
 > Plan: [`plan_t5_implementacja.md`](plan_t5_implementacja.md)
 
 ## Zrobione
@@ -18,7 +19,7 @@ uv run alembic upgrade head
 uv run crossdock
 ```
 
-1. Ustawienia → Lokalizacje → Wczytaj seed (jeśli pusto)
+1. Ustawienia → Lokalizacje → Wczytaj słownik lokalizacji (jeśli pusto)
 2. Zlecenia → wgraj `carrier_load_status1620780.xlsx` (lub inny e2open)
 3. Plany → Generuj plan → **Pokaż na mapie**
 4. Mapa: depot + kolorowe trasy, kliknij marker → popup

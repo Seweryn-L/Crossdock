@@ -26,6 +26,16 @@ def _configure_logging() -> None:
     )
 
 
+def _apply_migrations() -> None:
+    """Bring SQLite to Alembic head so new columns exist before first query."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+    logger.info("Schemat bazy aktualny (Alembic).")
+
+
 def _seed_admin() -> None:
     settings = get_settings()
     if settings.admin_password is None:
@@ -91,6 +101,7 @@ def _start_backup_scheduler() -> None:
 def main() -> None:
     _configure_logging()
     settings = get_settings()
+    _apply_migrations()
     _seed_admin()
     _seed_fleet()
     _seed_locations()

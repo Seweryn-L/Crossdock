@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
-from crossdock.services.orders import update_approved_pallets
+from crossdock.services.orders import update_approved_pallets, update_order_cargo
 from crossdock.services.planning import PlanningService
 from crossdock.services.reports import build_report, export_report_xlsx
 from crossdock.services.warehouse_queue import (
@@ -103,13 +103,12 @@ def test_pallet_update_approved_only(db_session: Session) -> None:
     assert overflow.needs_replan is True
     assert overflow.warning is not None
 
-    # reject non-approved
     hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
     new_order = OrderRepository(db_session).add_many(
         [
             Order(
                 delivery_code="NEW1",
-                shipments=[Shipment(shipment_number="SN", weight_kg=100)],
+                shipments=[Shipment(shipment_number="SN", weight_kg=1000)],
                 pickup_location=hub,
                 delivery_location=Location(
                     name="X", city="Paris", country="FR", latitude=48.8, longitude=2.3
@@ -120,9 +119,38 @@ def test_pallet_update_approved_only(db_session: Session) -> None:
         ]
     )[0]
     assert new_order.id is not None
-    with pytest.raises(ValueError, match="approved"):
-        update_approved_pallets(
-            db_session, order_id=new_order.id, total_pallets=1, username="tester"
+    cargo = update_order_cargo(
+        db_session,
+        order_id=new_order.id,
+        username="tester",
+        total_pallets=None,
+        kg_per_pallet=250.0,
+    )
+    assert cargo.order.kg_per_pallet == 250.0
+    assert cargo.new_total == 4
+
+    delivered = OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="DEL1",
+                shipments=[Shipment(shipment_number="SD", weight_kg=100)],
+                pickup_location=hub,
+                delivery_location=Location(
+                    name="Y", city="Paris", country="FR", latitude=48.8, longitude=2.3
+                ),
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.DELIVERED,
+            )
+        ]
+    )[0]
+    assert delivered.id is not None
+    with pytest.raises(ValueError, match="nowe"):
+        update_order_cargo(
+            db_session,
+            order_id=delivered.id,
+            username="tester",
+            total_pallets=1,
+            kg_per_pallet=None,
         )
 
 

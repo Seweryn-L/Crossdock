@@ -1,5 +1,7 @@
 # Tydzień 1 — Walkthrough (Kroki 7–8)
 
+> Dokument historyczny (stan na koniec T1). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
+
 ## Wykonane prace
 
 ### Krok 7 — Jakość: ruff, mypy, import-linter, pre-commit

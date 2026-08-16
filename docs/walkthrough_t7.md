@@ -1,5 +1,6 @@
 # Tydzień 7 — Walkthrough (buforowanie + operacyjność)
 
+> Dokument historyczny (stan na koniec T7). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
 > Plan: [`plan_t7_implementacja.md`](plan_t7_implementacja.md)
 
 ## Status

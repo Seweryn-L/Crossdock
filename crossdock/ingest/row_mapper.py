@@ -120,7 +120,7 @@ def row_to_shipment_and_locations(
     if not delivery_name:
         raise ValueError("brak miejsca dostawy (delivery_name)")
 
-    # Pallet count often missing in company files (W-04) — keep None, do not invent.
+    # Excel has no pallet column today; hook stays for a future column (overrides estimate).
     pallet_count = None
     if "pallet_count" in mapping.columns:
         try:

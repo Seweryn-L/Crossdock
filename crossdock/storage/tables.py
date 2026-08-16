@@ -52,6 +52,7 @@ class OrderRow(Base):
     delivery_longitude: Mapped[float | None]
     delivery_date: Mapped[date] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(20), default="new")
+    kg_per_pallet: Mapped[float | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     shipments: Mapped[list["ShipmentRow"]] = relationship(
@@ -84,7 +85,7 @@ class AuditLogRow(Base):
 
 
 class VehicleRow(Base):
-    """Fleet vehicle. Seed rows are placeholders until Martyna's table (W-03)."""
+    """Fleet vehicle. Seed capacities from config/fleet_seed.json."""
 
     __tablename__ = "vehicles"
 
@@ -94,7 +95,8 @@ class VehicleRow(Base):
     pallet_capacity: Mapped[int]
     weight_capacity_kg: Mapped[float]
     is_active: Mapped[bool] = mapped_column(default=True)
-    is_placeholder: Mapped[bool] = mapped_column(default=True)
+    is_placeholder: Mapped[bool] = mapped_column(default=False)
+    is_busy: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -162,7 +164,7 @@ class AssignmentItemRow(Base):
 
 
 class AssignmentRouteRow(Base):
-    """Per-vehicle route metrics for a plan run (T4)."""
+    """Per-vehicle route metrics for a plan run (T4+ incremental approve)."""
 
     __tablename__ = "assignment_routes"
 
@@ -173,6 +175,9 @@ class AssignmentRouteRow(Base):
     drop_count: Mapped[int]
     distance_km: Mapped[float]
     cost_eur: Mapped[float]
+    route_status: Mapped[str] = mapped_column(String(20), default="proposed")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     run: Mapped[AssignmentRunRow] = relationship(back_populates="routes")
 

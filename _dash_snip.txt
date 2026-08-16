@@ -1,0 +1,12 @@
+@ui.page("/")
+def dashboard_page() -> None:
+    with session_scope() as session:
+        order_count = OrderRepository(session).count()
+        vehicle_count = VehicleRepository(session).count()
+
+    with page_frame("Pulpit"):
+        with ui.card().classes("w-full max-w-3xl p-6"):
+            ui.label("Witaj w systemie Crossdock").classes("text-2xl font-bold")
+            ui.label(
+                "System optymalizacji cross-dockingu: import zlece?, planowanie "
+                "transport?w FTL

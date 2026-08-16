@@ -1,5 +1,6 @@
 # Tydzień 4 — Walkthrough (trasy + zatwierdzanie planu)
 
+> Dokument historyczny (stan na koniec T4). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
 > Plan: [`plan_t4_implementacja.md`](plan_t4_implementacja.md)
 
 ## Zrobione

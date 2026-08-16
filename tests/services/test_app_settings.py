@@ -35,6 +35,8 @@ def test_save_and_load_runtime_overrides(tmp_path: Path, monkeypatch) -> None:
 
     snap = editable_settings_snapshot(merged)
     assert "max_drops_per_route" in snap
+    assert "default_kg_per_pallet" in snap
+    assert "kg_per_pallet_bus" in snap
     assert "storage_secret" not in snap
     assert "host" not in snap
     assert "admin_password" not in snap

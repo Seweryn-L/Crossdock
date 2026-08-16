@@ -4,8 +4,8 @@ System optymalizacji cross-dockingu w logistyce transportowej. Aplikacja webowa 
 dla dyspozytorów transportu: import zleceń z Excela (docelowo API TMS e2open), optymalizacja
 transportów FTL, wizualizacja tras na mapie, raporty.
 
-**Przed pracą przeczytaj:** `docs/stack_technologiczny.md` (uzgodniony stack i decyzje),
-`docs/plan_tworzenia_aplikacji.md` (harmonogram), `docs/notatka_srs.md` (wymagania FR/NFR).
+**Przed pracą przeczytaj:** `docs/stan_projektu.md` (aktualny stan), `docs/stack_technologiczny.md` (stack),
+`docs/plan_tworzenia_aplikacji.md` (harmonogram), `docs/notatka_srs.md` (FR/NFR).
 
 ## Stack (nie zmieniaj bez zgody)
 
@@ -63,5 +63,10 @@ To DOCELOWY format importu. Mapowanie: `config/excel_column_mapping.json`.
 nagłówek w wierszu 1; adres tylko nazwą odbiorcy, wagi w FUNTACH, objętość w stopach szesciennych).
 Wsparcie drugiego formatu — osobne mapowanie / Faza późniejsza; nie jest domyślnym importem T2.
 
-Uwaga: żaden plik nie zawiera liczby palet (wymaganie FR-004) — kwestia otwarta, wyjaśniana z firmą (W-04).
+Uwaga: żaden plik Excel **nie zawiera** liczby palet i kolumny nie planujemy (W-04 DONE
+jako szacunek warstwowy). Hierarchia w `crossdock/domain/pallet_estimate.py`:
+(1) nadpisanie na zleceniu — kg/paleta towaru albo palety; (2) kg/paleta typu pojazdu
+(Ustawienia → Flota); (3) domyślne kg/paleta towaru (Ustawienia → Parametry) gdy nie ma
+kontekstu pojazdu. Solver pakuje po **kg + palety**. Haczyk na kolumnę Excela w mapowaniu
+zostaje — gdyby kiedyś była, nadpisuje wszystko. Nie buduj pod to UI.
 Słowniki sprzętu różnią się między plikami ("Flatbed" vs "EU: 09 CURTAIN / BOX TRAILER") — mapuj przez konfigurację.

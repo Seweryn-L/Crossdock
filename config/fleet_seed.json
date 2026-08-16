@@ -1,0 +1,47 @@
+{
+  "_comment": "From Drive FLota.xlsx (Martyna) + mail Grabowski; counts unknown (~130 total). kg_per_pallet = weight_capacity_kg / pallet_capacity (W-04 estimate).",
+  "source": "Google Drive Projekt-TY100 / FLota",
+  "updated": "2026-08-11",
+  "total_vehicles_estimate": 130,
+  "counts_known": false,
+  "vehicle_types": [
+    {
+      "code_prefix": "BUS",
+      "vehicle_type": "bus",
+      "length_m": 4.2,
+      "width_m": 2.2,
+      "height_m": 2.2,
+      "pallet_capacity": 8,
+      "weight_capacity_kg": 1050,
+      "kg_per_pallet": 131.25,
+      "notes": "mail od Grabowskiego"
+    },
+    {
+      "code_prefix": "TRUCK",
+      "vehicle_type": "truck",
+      "length_m": 13.6,
+      "width_m": 2.45,
+      "height_m": null,
+      "pallet_capacity": 33,
+      "weight_capacity_kg": 24500,
+      "kg_per_pallet": 742.4242424242424,
+      "notes": "samochod/naczepa 13.6m — cross-dock paletowy"
+    },
+    {
+      "code_prefix": "CURTAIN",
+      "vehicle_type": "curtain",
+      "length_m": 13.6,
+      "width_m": 2.45,
+      "height_m": null,
+      "pallet_capacity": 33,
+      "weight_capacity_kg": 24500,
+      "kg_per_pallet": 742.4242424242424,
+      "notes": "plandeka/curtain — te same pojemnosci co naczepa 13.6m"
+    }
+  ],
+  "seed_units": {
+    "bus": 2,
+    "truck": 4,
+    "curtain": 8
+  }
+}

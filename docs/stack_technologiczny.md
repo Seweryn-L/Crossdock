@@ -1,6 +1,7 @@
 # Stack technologiczny — System optymalizacji cross-dockingu w logistyce transportowej
 
 > Opracowano na podstawie: `karta_projektu_i_wdrozenia.md`, `notatka_srs.md` oraz decyzji podjętych w rozmowie (14.07.2026).
+> Stan implementacji na 13.08.2026: [`stan_projektu.md`](stan_projektu.md).
 > Zasady nadrzędne: rdzeń w Pythonie, w pełni local-first (bez komponentów chmurowych — decyzja z Obszaru 13),
 > wyłącznie oprogramowanie darmowe/open-source, płynność jako wymaganie projektowe.
 

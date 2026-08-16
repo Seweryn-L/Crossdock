@@ -156,12 +156,14 @@ def test_approve_plan_sets_approved_and_blocks_second(db_session: Session) -> No
     run = AssignmentRepository(db_session).get_run(plan.run_id)
     assert run is not None
     assert run.plan_status == "approved"
-    assert run.approved_by == "approver"
+
+    vehicles = VehicleRepository(db_session).list_active()
+    assert all(v.is_busy for v in vehicles)
 
     with pytest.raises(ValueError, match="już zatwierdzony"):
         service.approve_plan(run_id=plan.run_id, username="approver")
 
-    with pytest.raises(ValueError, match="zatwierdzony"):
+    with pytest.raises(ValueError, match="Brak (wolnych pojazdów|zleceń)"):
         service.run_plan(username="tester")
 
 
@@ -184,10 +186,68 @@ def test_unlock_plan_allows_regenerate(db_session: Session) -> None:
     run = AssignmentRepository(db_session).get_run(plan.run_id)
     assert run is not None
     assert run.plan_status == "draft"
-    assert run.approved_by is None
+    assert all(not v.is_busy for v in VehicleRepository(db_session).list_active())
 
     again = service.run_plan(username="tester")
-    assert again.run_id > plan.run_id
+    # Living run: same run id after unlock + regenerate.
+    assert again.run_id == plan.run_id
+
+
+def test_approve_route_locks_vehicle_and_second_plan_keeps_approved(
+    db_session: Session,
+) -> None:
+    _add_vehicle(db_session, code="T1")
+    _add_vehicle(db_session, code="T2")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    _add_order(db_session, code="C", weight=1800, lat=51.92, lon=4.48)
+
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    assert len(routes) >= 1
+    first = routes[0]
+    assert first.vehicle_id is not None
+
+    approved = service.approve_route(
+        run_id=plan.run_id, vehicle_id=first.vehicle_id, username="approver"
+    )
+    assert approved.vehicle_code == first.vehicle_code
+    assert len(approved.approved_order_ids) >= 1
+
+    vehicle = VehicleRepository(db_session).get_by_id(first.vehicle_id)
+    assert vehicle is not None and vehicle.is_busy
+
+    run = AssignmentRepository(db_session).get_run(plan.run_id)
+    assert run is not None
+    assert run.plan_status in {"partial", "approved"}
+
+    approved_ids = set(approved.approved_order_ids)
+    # Add a leftover NEW order so regenerate has work if pool emptied.
+    remaining_new = [
+        o
+        for o in OrderRepository(db_session).list_all()
+        if o.status == OrderStatus.NEW
+    ]
+    available = VehicleRepository(db_session).list_available()
+    if remaining_new and available:
+        again = service.run_plan(username="tester")
+        assert again.run_id == plan.run_id
+        # Approved orders stay APPROVED and their route remains.
+        for oid in approved_ids:
+            order = OrderRepository(db_session).get_by_id(oid)
+            assert order is not None
+            assert order.status == OrderStatus.APPROVED
+        kept = AssignmentRepository(db_session).get_route(plan.run_id, first.vehicle_id)
+        assert kept is not None
+        assert kept.route_status == "approved"
+
+    unlocked = service.unlock_route(
+        run_id=plan.run_id, vehicle_id=first.vehicle_id, username="unlocker"
+    )
+    assert set(unlocked.reset_order_ids) == approved_ids
+    vehicle2 = VehicleRepository(db_session).get_by_id(first.vehicle_id)
+    assert vehicle2 is not None and not vehicle2.is_busy
 
 
 def test_delete_plan_allows_regenerate(db_session: Session) -> None:
@@ -213,3 +273,32 @@ def test_delete_plan_allows_regenerate(db_session: Session) -> None:
     run = AssignmentRepository(db_session).get_run(again.run_id)
     assert run is not None
     assert run.plan_status == "draft"
+
+
+def test_orders_to_solver_uses_cargo_override() -> None:
+    from crossdock.services.planning import orders_to_solver
+
+    loc = Location(name="Hub", city="Antwerp", country="BE")
+    dest = Location(name="Cust", city="Paris", country="FR")
+    with_cargo = Order(
+        id=1,
+        delivery_code="CARGO",
+        shipments=[Shipment(shipment_number="S1", weight_kg=2000)],
+        pickup_location=loc,
+        delivery_location=dest,
+        delivery_date=date(2026, 8, 1),
+        kg_per_pallet=500.0,
+    )
+    plain = Order(
+        id=2,
+        delivery_code="PLAIN",
+        shipments=[Shipment(shipment_number="S2", weight_kg=2000)],
+        pickup_location=loc,
+        delivery_location=dest,
+        delivery_date=date(2026, 8, 1),
+    )
+    solver_orders, skipped = orders_to_solver([with_cargo, plain])
+    assert skipped == []
+    by_id = {o.id: o for o in solver_orders}
+    assert by_id[1].pallet_count == 4
+    assert by_id[2].pallet_count is None

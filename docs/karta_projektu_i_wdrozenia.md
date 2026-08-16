@@ -81,7 +81,10 @@ graph LR
 
 ## 5. Kamienie Milowe Wdrożenia
 
-* **Krok 1: Prace przygotowawcze (Obecnie):** Setup środowiska programistycznego Python, przygotowanie pierwszego pliku Excel z danymi testowymi z portalu e2open (Martyna & Seweryn).
-* **Krok 2: Projektowanie algorytmu MVP:** Implementacja podstawowego grupowania FTL i walidacji paczek (Seweryn & Patryk) oraz opracowanie wskaźników kosztowych (Sandra).
-* **Krok 3: Integracja z API i testy produkcyjne:** Integracja modułu API (po powrocie działu IT klienta), konfiguracja automatycznych zadań importu o 5:30 i 11:30, walidacja na danych rzeczywistych.
+> Aktualny stan kodu (13.08.2026): [`stan_projektu.md`](stan_projektu.md). Faza 1 (Excel → solver → GUI) jest zaimplementowana przez T7. Faza 2 (API, GPS) bez zmian — czeka na IT klienta.
+
+* **Krok 1: Prace przygotowawcze:** Setup Python, pierwszy Excel z e2open — **zrobione**.
+* **Krok 2: Algorytm MVP:** Grupowanie FTL, trasy, mapa, raporty, magazyn — **zrobione w kodzie**; stawki Sandry i golden Patryka nadal placeholdery.
+* **Krok 3: Integracja z API i testy produkcyjne:** po powrocie IT klienta (poza harmonogramem do 15.09).
+
 

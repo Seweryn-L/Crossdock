@@ -56,6 +56,7 @@ class VehicleMapRoute:
     # Closed path: depot → drops in sequence → depot
     polyline: tuple[tuple[float, float], ...]
     markers: tuple[MapPoint, ...]
+    route_status: str = "proposed"
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,7 @@ class MapViewService:
                 continue
             path.append((depot_lat, depot_lon))
             meta = routes_meta.get(vehicle_code)
+            status = (meta.route_status if meta else None) or "proposed"
             vehicle_routes.append(
                 VehicleMapRoute(
                     vehicle_code=vehicle_code,
@@ -161,6 +163,7 @@ class MapViewService:
                     cost_eur=meta.cost_eur if meta else None,
                     polyline=tuple(path),
                     markers=tuple(markers),
+                    route_status=status,
                 )
             )
 

@@ -11,6 +11,7 @@ from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.domain.models import OrderStatus
 from crossdock.optimization.buffering import decide_buffer
 from crossdock.optimization.dto import BufferCandidate, BufferDecision, BufferRates
+from crossdock.services.pallet_demand import demand_without_vehicle
 from crossdock.services.plan_view import build_plan_view
 from crossdock.services.warehouse_queue import enqueue_order, set_held
 from crossdock.storage.repositories import (
@@ -65,14 +66,14 @@ def list_buffer_candidates(
         if loc.latitude is None or loc.longitude is None:
             continue
         km = distance.distance_km(depot[0], depot[1], float(loc.latitude), float(loc.longitude))
-        pallets = order.total_pallets if order.total_pallets is not None else 1
         weight = order.total_weight_kg or 0.0
+        pallets = demand_without_vehicle(order, settings)
         candidates.append(
             BufferCandidate(
                 order_id=order.id,
                 delivery_code=order.delivery_code,
                 weight_kg=weight,
-                pallet_count=max(int(pallets), 1),
+                pallet_count=max(int(pallets), 0),
                 distance_km=km,
             )
         )

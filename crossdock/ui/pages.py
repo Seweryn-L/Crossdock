@@ -36,8 +36,9 @@ from crossdock.services.orders import (
     delete_all_orders,
     delete_orders,
     order_counts,
-    update_approved_pallets,
+    update_order_cargo,
 )
+from crossdock.services.pallet_demand import cargo_table_pallets
 from crossdock.services.plan_view import PlanView, build_plan_view
 from crossdock.services.planning import PlanningService
 from crossdock.services.reports import ReportBundle, build_report, export_report_xlsx
@@ -76,6 +77,7 @@ from crossdock.ui.widgets import (
 def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for order in orders:
+        shown = cargo_table_pallets(order)
         rows.append(
             {
                 "id": order.id,
@@ -86,7 +88,9 @@ def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
                 "status": order_status_pl(order.status.value),
                 "status_code": order.status.value,
                 "shipments": len(order.shipments),
-                "pallets": order.total_pallets if order.total_pallets is not None else "?",
+                "pallets": shown if shown is not None else "—",
+                "kg_per_pallet": order.kg_per_pallet,
+                "explicit_pallets": order.total_pallets,
                 "weight_kg": (
                     round(order.total_weight_kg, 1) if order.total_weight_kg is not None else "?"
                 ),
@@ -223,10 +227,19 @@ def _delete_plan_job(run_id: int, username: str) -> tuple[int, int]:
     return outcome.run_id, len(outcome.reset_order_ids)
 
 
-def _update_pallets_job(order_id: int, total: int, username: str):
+def _update_cargo_job(
+    order_id: int,
+    total_pallets: int | None,
+    kg_per_pallet: float | None,
+    username: str,
+):
     with session_scope() as session:
-        return update_approved_pallets(
-            session, order_id=order_id, total_pallets=total, username=username
+        return update_order_cargo(
+            session,
+            order_id=order_id,
+            username=username,
+            total_pallets=total_pallets,
+            kg_per_pallet=kg_per_pallet,
         )
 
 
@@ -301,13 +314,16 @@ async def orders_page() -> None:
                 delete_all_btn = ui.button("Usuń wszystkie", icon="delete_sweep").props(
                     "outline color=negative"
                 )
-                pallets_btn = ui.button("Zmień palety", icon="pallet").props("outline")
+                pallets_btn = ui.button("Gęstość / palety", icon="pallet").props("outline")
                 pallets_btn.disable()
                 info_hint(
                     "Gdy baza jest pusta, zaimportuj plik Excel, aby rozpocząć planowanie. "
                     "Import doda nowe zlecenia. Usuń zaznaczone w tabeli. "
-                    "Zmień palety: dostępne po zatwierdzeniu planu; "
-                    "zaznacz jedno zlecenie zatwierdzone."
+                    "Liczba palet zależy od pojazdu — widać ją w planie. "
+                    "Kolumna Palety pokazuje wartość tylko gdy zlecenie ma własne "
+                    "kg/paleta towaru albo wpisane palety. "
+                    "Gęstość / palety: zaznacz jedno zlecenie (nowe, zaplanowane "
+                    "lub zatwierdzone)."
                 )
                 upload = (
                     ui.upload(
@@ -372,9 +388,13 @@ async def orders_page() -> None:
             )
         )
 
+        _CARGO_STATUSES = {"new", "planned", "approved"}
+
         async def sync_pallets_button() -> None:
             selected = await grid.get_selected_rows()
-            can_edit = len(selected) == 1 and str(selected[0].get("status_code", "")) == "approved"
+            can_edit = (
+                len(selected) == 1 and str(selected[0].get("status_code", "")) in _CARGO_STATUSES
+            )
             if can_edit:
                 pallets_btn.enable()
             else:
@@ -470,28 +490,50 @@ async def orders_page() -> None:
         async def on_edit_pallets() -> None:
             selected = await grid.get_selected_rows()
             if not selected or len(selected) != 1:
-                ui.notify("Zaznacz dokładnie jedno zlecenie zatwierdzone.", type="warning")
+                ui.notify("Zaznacz dokładnie jedno zlecenie.", type="warning")
                 return
             row = selected[0]
-            if str(row.get("status_code")) != "approved":
+            if str(row.get("status_code")) not in _CARGO_STATUSES:
                 ui.notify(
-                    "Edycja palet tylko dla zleceń zatwierdzonych.",
+                    "Edycja gęstości / palet dla zleceń nowych, zaplanowanych i zatwierdzonych.",
                     type="warning",
                 )
                 return
             order_id = int(row["id"])
-            current = row.get("pallets")
-            default_val = int(current) if isinstance(current, (int, float)) else 0
-            with ui.dialog() as dialog, ui.card().classes("p-4 gap-3 min-w-[280px]"):
-                ui.label(f"Palety — {row['delivery_code']}").classes("font-medium")
-                pallets_in = ui.number("Liczba palet", value=default_val, min=0, precision=0)
+            current_pallets = row.get("explicit_pallets")
+            current_kg = row.get("kg_per_pallet")
+            with ui.dialog() as dialog, ui.card().classes("p-4 gap-3 min-w-[320px]"):
+                ui.label(f"Towar — {row['delivery_code']}").classes("font-medium")
+                ui.label(
+                    "Wpisz kg/paleta towaru albo dokładne palety. "
+                    "Puste pola = brak nadpisania (szacunek zależy od pojazdu)."
+                ).classes("text-sm text-gray-600")
+                kg_in = ui.number(
+                    "kg / paleta towaru",
+                    value=float(current_kg) if current_kg not in (None, "") else None,
+                    min=0.1,
+                    format="%.2f",
+                )
+                pallets_in = ui.number(
+                    "Palety (opcjonalnie)",
+                    value=(
+                        int(current_pallets) if isinstance(current_pallets, (int, float)) else None
+                    ),
+                    min=0,
+                    precision=0,
+                )
 
                 async def save_pallets() -> None:
+                    kg_raw = kg_in.value
+                    pal_raw = pallets_in.value
+                    kg_val = float(kg_raw) if kg_raw not in (None, "") else None
+                    pal_val = int(pal_raw) if pal_raw not in (None, "") else None
                     try:
                         result = await run.io_bound(
-                            _update_pallets_job,
+                            _update_cargo_job,
                             order_id,
-                            int(pallets_in.value or 0),
+                            pal_val,
+                            kg_val,
                             username,
                         )
                     except Exception as exc:
@@ -504,10 +546,7 @@ async def orders_page() -> None:
                             type="warning",
                         )
                     else:
-                        ui.notify(
-                            f"Zapisano palety: {result.old_total} → {result.new_total}.",
-                            type="positive",
-                        )
+                        ui.notify("Zapisano gęstość / palety towaru.", type="positive")
                     await refresh_grid()
 
                 with ui.row().classes("gap-2 justify-end w-full"):
@@ -649,6 +688,15 @@ async def plans_page() -> None:
                                             "field": "cost_eur",
                                             "sortable": True,
                                         },
+                                        {
+                                            "headerName": "Palety",
+                                            "field": "pallets",
+                                            "sortable": True,
+                                        },
+                                        {
+                                            "headerName": "Zapełnienie palet",
+                                            "field": "pallet_fill",
+                                        },
                                     ],
                                     "rowData": [],
                                     "rowSelection": "single",
@@ -685,12 +733,14 @@ async def plans_page() -> None:
                         {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
                         {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
                         {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        {"headerName": "Palety", "field": "pallets", "sortable": True},
                         {"headerName": "Zapełnienie", "field": "fill_pct"},
                     ]
                     stay_cols = [
                         {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
                         {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
                         {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        {"headerName": "Palety", "field": "pallets", "sortable": True},
                         {"headerName": "Powód", "field": "reason", "flex": 1},
                     ]
 
@@ -1288,8 +1338,8 @@ async def reports_page() -> None:
     with page_frame("Raporty"):
         ops_page_header(
             "Raporty",
-            "Zapełnienie wagowe pojazdów oraz oszczędności względem "
-            "scenariusza 1 zlecenie = 1 pojazd. Stawka za km z ustawień.",
+            "Zapełnienie wagowe i paletowe pojazdów oraz oszczędności względem "
+            "scenariusza 1 zlecenie = 1 pojazd. Stawki z Ustawienia → Parametry.",
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Efektywność planu").classes("font-bold")
@@ -1304,7 +1354,9 @@ async def reports_page() -> None:
                             {"headerName": "Pojazd", "field": "vehicle"},
                             {"headerName": "Status", "field": "route_status_pl"},
                             {"headerName": "Punkty rozładunku", "field": "drops"},
-                            {"headerName": "Zapełnienie %", "field": "fill"},
+                            {"headerName": "Zapełnienie wagowe %", "field": "fill"},
+                            {"headerName": "Palety", "field": "pallets"},
+                            {"headerName": "Zapełnienie palet %", "field": "pallet_fill"},
                             {"headerName": "Km", "field": "km"},
                             {"headerName": "Koszt €", "field": "cost"},
                         ],
@@ -1333,7 +1385,13 @@ async def reports_page() -> None:
                     "vehicle": r.vehicle_code,
                     "route_status_pl": route_status_pl(r.route_status),
                     "drops": r.drop_count,
-                    "fill": (round(r.fill_ratio * 100, 1) if r.fill_ratio is not None else "?"),
+                    "fill": (round(r.fill_ratio * 100, 1) if r.fill_ratio is not None else "—"),
+                    "pallets": r.total_pallets,
+                    "pallet_fill": (
+                        round(r.pallet_fill_ratio * 100, 1)
+                        if r.pallet_fill_ratio is not None
+                        else "—"
+                    ),
                     "km": round(r.distance_km, 1),
                     "cost": round(r.cost_eur, 2),
                 }
@@ -1373,7 +1431,7 @@ def _export_report_bytes() -> bytes | None:
         return export_report_xlsx(bundle)
 
 
-@ui.page("/warehouse")
+@ui.page("/warehouse", timeout=60.0)
 async def warehouse_page() -> None:
     username = app.storage.user.get("username", "unknown")
     with page_frame("Magazyn"):
@@ -1574,6 +1632,7 @@ async def warehouse_page() -> None:
                             {"headerName": "Kod", "field": "delivery_code"},
                             {"headerName": "ID", "field": "order_id", "width": 80},
                             {"headerName": "Decyzja", "field": "action"},
+                            {"headerName": "Palety", "field": "pallets"},
                             {"headerName": "Dni", "field": "buffer_days"},
                             {"headerName": "Oszczędność %", "field": "savings_pct"},
                         ],
@@ -1602,12 +1661,18 @@ async def warehouse_page() -> None:
             except Exception as exc:
                 ui.notify(f"Błąd propozycji: {exc}", type="negative")
                 return
+            if bundle is None:
+                buffer_summary.set_text(
+                    "Propozycja niegotowa — kliknij „Odśwież propozycję”."
+                )
+                return
             buffer_decisions = {d.order_id: d for d in bundle.decisions}
             buffer_grid.options["rowData"] = [
                 {
                     "delivery_code": d.delivery_code,
                     "order_id": d.order_id,
                     "action": buffer_action_pl(d.action),
+                    "pallets": d.pallet_count,
                     "buffer_days": d.buffer_days,
                     "savings_pct": round(d.savings_ratio * 100, 1),
                     "_code": d.action,
@@ -1644,7 +1709,8 @@ async def warehouse_page() -> None:
             )
 
         await refresh_all()
-        await refresh_buffer()
+        buffer_summary.set_text("Liczenie propozycji bufora…")
+        ui.timer(0.05, refresh_buffer, once=True)
 
 
 def _load_warehouse_view():
@@ -1930,6 +1996,7 @@ PARAM_LABELS_PL = {
     "ltl_cost_multiplier": "Mnożnik drobnicy (LTL)",
     "buffer_savings_threshold": "Próg oszczędności bufora (0-1)",
     "max_buffer_days": "Maks. dni buforowania",
+    "default_kg_per_pallet": "Domyślne kg / paleta towaru",
     "upload_max_mb": "Limit uploadu Excel [MB]",
     "backup_keep": "Ile kopii zapasowych trzymać",
     "backup_hour": "Godzina nocnej kopii",
@@ -1955,12 +2022,14 @@ async def settings_page() -> None:
                     ui.label("Flota pojazdów").classes("font-bold")
                     ui.label(
                         "Ustaw liczbę aktywnych pojazdów według typu (bus, ciężarówka, plandeka). "
-                        "Pojemności i kg/paleta pochodzą ze słownika floty. "
+                        "kg / paleta przy typie służy do szacunku palet, gdy zlecenie "
+                        "nie ma własnej gęstości towaru. "
                         "Pojazdy z zatwierdzoną trasą nie są dezaktywowane."
                     ).classes("text-sm text-gray-700")
 
                 type_overview = await run.io_bound(_load_fleet_type_overview)
                 type_inputs: dict[str, object] = {}
+                kg_inputs: dict[str, ui.number] = {}
                 with ui.row().classes("w-full gap-4 flex-wrap mb-2"):
                     for row in type_overview:
                         vtype = str(row["vehicle_type"])
@@ -1970,12 +2039,17 @@ async def settings_page() -> None:
                             ui.label(vtype.upper()).classes("font-bold")
                             ui.label(
                                 f"Palety: {row['pallet_capacity']} · "
-                                f"Kg: {row['weight_capacity_kg']} · "
-                                f"kg/paleta: {row['kg_per_pallet']}"
+                                f"Kg: {row['weight_capacity_kg']}"
                             ).classes("text-xs text-gray-600")
                             ui.label(
                                 f"Aktywne: {row['active_count']} · Zajęte: {row['busy_count']}"
                             ).classes("text-xs")
+                            kg_inputs[vtype] = ui.number(
+                                "kg / paleta",
+                                value=float(row["kg_per_pallet"]),
+                                min=1,
+                                format="%.3f",
+                            ).classes("w-40")
                             type_inputs[vtype] = ui.number(
                                 "Liczba aktywnych",
                                 value=int(row["active_count"]),
@@ -2003,12 +2077,25 @@ async def settings_page() -> None:
                         if vtype in type_inputs:
                             type_inputs[vtype].value = int(row["active_count"])  # type: ignore[union-attr]
 
+                async def on_save_type_kg() -> None:
+                    updates = {
+                        f"kg_per_pallet_{vtype}": float(widget.value or 0)
+                        for vtype, widget in kg_inputs.items()
+                    }
+                    await run.io_bound(_save_params_job, updates, username)
+                    ui.notify("Zapisano kg / paleta dla typów floty.", type="positive")
+
                 with ui.row().classes("cd-toolbar mb-2"):
                     ui.button(
                         "Zastosuj liczby pojazdów",
                         icon="sync",
                         on_click=on_sync_type_counts,
                     ).props("color=primary")
+                    ui.button(
+                        "Zapisz kg / paleta",
+                        icon="save",
+                        on_click=on_save_type_kg,
+                    ).props("outline")
 
                 vehicles = await run.io_bound(_load_vehicles)
                 fleet_host = ui.element("div").classes("cd-grid-host")
@@ -2211,6 +2298,10 @@ async def settings_page() -> None:
                             "solver_seed",
                             "default_delivery_days",
                         ],
+                    ),
+                    (
+                        "Palety",
+                        ["default_kg_per_pallet"],
                     ),
                     (
                         "Koszty i bufor",

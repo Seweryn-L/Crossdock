@@ -1,6 +1,7 @@
 # Tydzień 2 — postęp implementacji (start bez danych zespołu)
 
-> Plan: [`plan_t2_implementacja.md`](plan_t2_implementacja.md)
+> Dokument historyczny (stan na T2, 20.07.2026). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md). Flota nie jest już placeholderem — pojemności Martyny są w `config/fleet_seed.json`.
+> Plan z tamtego tygodnia: [`plan_t2_implementacja.md`](plan_t2_implementacja.md)
 > Braki od zespołu: [`otwarte_wejscia_zespolu.md`](otwarte_wejscia_zespolu.md)
 
 ## Zrobione (20.07.2026)
@@ -34,6 +35,6 @@ uv run crossdock
 ## Świadomie tymczasowe
 
 - Potwierdzenie mapowania kolumn przez Sandrę (W-02) — obecnie empiryczne z pliku
-- Pojemności floty (Martyna W-03)
+- Dokładna liczba pojazdów per typ (W-03 — pojemności już z FLota Martyny)
 - Brak liczby palet w Excelu (W-04)
 - Słownik lokalizacji: tabela gotowa; UI edycji współrzędnych — minimum (enrich przy imporcie)

@@ -74,6 +74,7 @@ def test_map_view_builds_polyline_in_sequence(db_session: Session) -> None:
     assert route.polyline[0] == route.polyline[-1]
     assert route.polyline[0] == (51.176, 4.836)
     assert len(route.markers) == 3
+    assert route.route_status == "proposed"
 
 
 def test_map_view_skips_missing_coords(db_session: Session) -> None:

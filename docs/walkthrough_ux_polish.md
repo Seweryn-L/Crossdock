@@ -1,5 +1,7 @@
 # UX polish — walkthrough
 
+> Dokument historyczny (wczesny polish: teal, pulpit KPI). Aktualny obraz UI: [`stan_projektu.md`](stan_projektu.md).
+
 Krótki przegląd zmian UI (język PL, motyw, ustawienia, pulpit).
 
 ## Co się zmieniło

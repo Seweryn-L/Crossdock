@@ -11,7 +11,7 @@
 ## Założenia (bez czekania na firmę)
 
 - Pojemność solvera: **kg** (w Excelu e2open są wagi; palet brak — W-04).
-- Flota: seed placeholder Martyny (W-03) — baner w UI.
+- Flota: seed z `config/fleet_seed.json` (W-03 pojemności Martyny; liczby jednostek szacunkowe).
 - Jednostka przydziału: całe `Order` (FR-019) — shipmenty nie są osobnymi zmiennymi.
 - Dystans / trasy / limit dropów / zatwierdzanie: **T4**, nie T3.
 - Zlecenia bez `weight_kg` → `unassigned` + ostrzeżenie (nie zgadywać wagi).

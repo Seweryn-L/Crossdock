@@ -12,15 +12,20 @@ class SolverOrder:
     id: int
     delivery_code: str
     weight_kg: float
+    # Layer-1 override (explicit pallets or cargo denseness already applied).
+    # None → solver estimates from this vehicle's kg_per_pallet (layer 2).
+    pallet_count: int | None = None
 
 
 @dataclass(frozen=True)
 class SolverVehicle:
-    """One fleet vehicle with kilogram capacity."""
+    """One fleet vehicle with kg + pallet capacity and denseness for estimates."""
 
     id: int
     code: str
     weight_capacity_kg: float
+    pallet_capacity: int
+    kg_per_pallet: float
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,7 @@ class BufferCandidate:
 
 @dataclass(frozen=True)
 class BufferRates:
-    """Cost parameters for FR-022 (placeholders until W-06)."""
+    """Cost parameters for FR-022 (from Settings / Parametry)."""
 
     cost_per_km: float
     storage_cost_per_pallet_day: float

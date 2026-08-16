@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "magic-patterns": {
+      "enabled": true
+    },
+    "google-drive": {
+      "enabled": true
+    }
+  }
+}

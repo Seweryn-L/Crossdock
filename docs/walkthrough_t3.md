@@ -1,5 +1,6 @@
 # Tydzień 3 — Walkthrough (przydział CP-SAT)
 
+> Dokument historyczny (stan na koniec T3). Aktualny obraz: [`stan_projektu.md`](stan_projektu.md).
 > Plan: [`plan_t3_implementacja.md`](plan_t3_implementacja.md)
 
 ## Zrobione

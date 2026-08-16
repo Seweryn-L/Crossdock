@@ -1,7 +1,7 @@
 """CP-SAT assignment of orders to heterogeneous vehicles (T3).
 
 Pure optimization: no I/O. Assigns whole orders (FR-019) maximizing
-total assigned weight (FR-011 fill), subject to kg capacities.
+total assigned weight (FR-011 fill), subject to kg and pallet capacities.
 """
 
 from __future__ import annotations
@@ -10,14 +10,33 @@ import time
 
 from ortools.sat.python import cp_model
 
+from crossdock.domain.pallet_estimate import resolve_pallet_demand
 from crossdock.optimization.dto import (
     AssignmentRequest,
     AssignmentResult,
+    SolverOrder,
+    SolverVehicle,
     VehicleLoad,
 )
 
 # OR-Tools CP-SAT works on integers; scale kg to grams.
 _WEIGHT_SCALE = 1000
+
+
+def _pallet_demand(order: SolverOrder, vehicle: SolverVehicle) -> int:
+    """Pallets required if ``order`` is loaded on ``vehicle``."""
+    demand = resolve_pallet_demand(
+        order.weight_kg,
+        explicit_pallets=order.pallet_count,
+        vehicle_kg_per_pallet=vehicle.kg_per_pallet,
+    )
+    return 0 if demand is None else demand
+
+
+def _fits_vehicle(order: SolverOrder, vehicle: SolverVehicle) -> bool:
+    if order.weight_kg > vehicle.weight_capacity_kg:
+        return False
+    return _pallet_demand(order, vehicle) <= vehicle.pallet_capacity
 
 
 def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
@@ -51,29 +70,35 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
             wall_time_s=time.perf_counter() - started,
         )
 
-    # Drop orders that cannot fit any vehicle alone.
-    eligible: list[tuple[int, int]] = []  # (order_index, weight_scaled)
+    # Drop orders that cannot fit any vehicle alone (kg or pallets).
+    eligible: list[SolverOrder] = []
     forced_unassigned: list[int] = []
-    max_cap = max(v.weight_capacity_kg for v in request.vehicles)
     for order in request.orders:
         if order.weight_kg <= 0:
             forced_unassigned.append(order.id)
             warnings.append(f"Zlecenie {order.delivery_code}: waga ≤ 0 — pominięte.")
             continue
-        if order.weight_kg > max_cap:
+        if not any(_fits_vehicle(order, v) for v in request.vehicles):
             forced_unassigned.append(order.id)
+            max_cap = max(v.weight_capacity_kg for v in request.vehicles)
             warnings.append(
                 f"Zlecenie {order.delivery_code}: waga {order.weight_kg:.0f} kg "
-                f"przekracza największy pojazd ({max_cap:.0f} kg)."
+                f"(lub szacunek palet) nie mieści się w żadnym pojeździe "
+                f"(max {max_cap:.0f} kg)."
             )
             continue
-        eligible.append((order.id, round(order.weight_kg * _WEIGHT_SCALE)))
+        eligible.append(order)
 
-    order_ids = [oid for oid, _ in eligible]
-    weights = [w for _, w in eligible]
+    order_ids = [o.id for o in eligible]
+    weights = [round(o.weight_kg * _WEIGHT_SCALE) for o in eligible]
     n_o = len(order_ids)
     n_v = len(request.vehicles)
     caps = [round(v.weight_capacity_kg * _WEIGHT_SCALE) for v in request.vehicles]
+    pallet_caps = [int(v.pallet_capacity) for v in request.vehicles]
+    # pallet_demand[o][v]
+    pallet_demand = [
+        [_pallet_demand(order, vehicle) for vehicle in request.vehicles] for order in eligible
+    ]
 
     if n_o == 0:
         return AssignmentResult(
@@ -97,15 +122,21 @@ def solve_assignment(request: AssignmentRequest) -> AssignmentResult:
     x: dict[tuple[int, int], cp_model.IntVar] = {}
     for o in range(n_o):
         for v in range(n_v):
-            x[o, v] = model.new_bool_var(f"x_{o}_{v}")
+            # Forbid pairs that exceed this vehicle alone.
+            if not _fits_vehicle(eligible[o], request.vehicles[v]):
+                # Fixed to 0 — still create var for uniform indexing.
+                x[o, v] = model.new_constant(0)
+            else:
+                x[o, v] = model.new_bool_var(f"x_{o}_{v}")
 
     # Each order on at most one vehicle.
     for o in range(n_o):
         model.add(sum(x[o, v] for v in range(n_v)) <= 1)
 
-    # Capacity per vehicle.
+    # Capacity per vehicle: kg and pallets.
     for v in range(n_v):
         model.add(sum(weights[o] * x[o, v] for o in range(n_o)) <= caps[v])
+        model.add(sum(pallet_demand[o][v] * x[o, v] for o in range(n_o)) <= pallet_caps[v])
 
     # Maximize assigned weight (FR-011).
     model.maximize(sum(weights[o] * x[o, v] for o in range(n_o) for v in range(n_v)))
