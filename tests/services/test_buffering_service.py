@@ -5,13 +5,19 @@ from __future__ import annotations
 from datetime import date
 
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment
-from crossdock.services.buffering import accept_buffer_proposals, propose_buffering
+from crossdock.services.buffering import (
+    accept_buffer_proposals,
+    compute_buffer_proposals,
+    propose_buffering,
+)
 from crossdock.services.warehouse_queue import list_queue
 from crossdock.storage.repositories import OrderRepository
+from crossdock.storage.tables import AuditLogRow
 
 
 def _settings() -> Settings:
@@ -58,3 +64,24 @@ def test_propose_and_accept_buffer(db_session: Session) -> None:
     assert accepted == 1
     queue = list_queue(db_session)
     assert any(e.order_id == saved.id and e.status == "held" for e in queue)
+
+
+def test_compute_buffer_proposals_does_not_write_audit(db_session: Session) -> None:
+    hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    dest = Location(name="Far", city="Paris", country="FR", latitude=48.85, longitude=2.35)
+    OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="BUF-RO",
+                shipments=[Shipment(shipment_number="S1", weight_kg=500, pallet_count=2)],
+                pickup_location=hub,
+                delivery_location=dest,
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )
+    bundle = compute_buffer_proposals(db_session, settings=_settings())
+    assert bundle.decisions
+    audits = db_session.scalars(select(AuditLogRow)).all()
+    assert audits == []
