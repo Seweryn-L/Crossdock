@@ -13,6 +13,8 @@ from crossdock.services.plan_view import (
     REASON_ATTENTION,
     REASON_HOLDING,
     REASON_STAYING,
+    SLA_LAST_DAY,
+    SLA_OVERFLOW,
     build_plan_view,
     classify_item,
 )
@@ -167,6 +169,7 @@ def test_thin_route_sends_on_last_leave_day(db_session: Session) -> None:
     PlanningService(db_session, settings=settings).run_plan(username="tester")
     view = build_plan_view(db_session, settings=settings)
     assert view.routes[0]["disposition"] == "send"
+    assert view.routes[0]["sla_label"] == SLA_LAST_DAY
     assert view.summary is not None
     assert view.summary.riding == 1
     assert view.holding_order_ids == ()
@@ -183,5 +186,5 @@ def test_overflow_capacity_flips_hold_to_send(db_session: Session) -> None:
     PlanningService(db_session, settings=settings).run_plan(username="tester")
     view = build_plan_view(db_session, settings=settings)
     assert view.routes[0]["disposition"] == "send"
-    assert view.routes[0]["sla_label"] == "Wypychane z magazynu"
+    assert view.routes[0]["sla_label"] == SLA_OVERFLOW
     assert view.holding_order_ids == ()

@@ -22,6 +22,10 @@ REASON_STAYING = "brak miejsca w flocie / nie wszedł do transportu całopojazdo
 REASON_HOLDING = "czeka na dopełnienie (poniżej progu zapełnienia)"
 REASON_ATTENTION = "brak trasy (współrzędne lub limit punktów rozładunku)"
 REASON_UNKNOWN = "nieznany stan"
+SLA_SEND = "Wyślij"
+SLA_LAST_DAY = "Ostatni dzień na wysłanie - ryzyko opóźnienia"
+SLA_OVERDUE = "Spóźnione"
+SLA_OVERFLOW = "Sugestia wysłania - brak miejsca w magazynie"
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,9 +191,9 @@ def build_plan_view(
             drop_summary = f"{drop_summary}…"
         min_slack = min(slacks) if slacks else None
         if send and min_slack is not None and min_slack <= 0:
-            sla_label = "Ostatni dzień wyjazdu" if min_slack == 0 else "Spóźnione"
+            sla_label = SLA_LAST_DAY if min_slack == 0 else SLA_OVERDUE
         elif send:
-            sla_label = "Wyślij"
+            sla_label = SLA_SEND
         else:
             sla_label = f"Czeka na dopełnienie ({round((fill or 0) * 100)}%)"
         route_rows.append(
@@ -226,7 +230,7 @@ def build_plan_view(
                 "weight_fill_pct": None,
                 "below_min_fill": False,
                 "disposition": "send",
-                "sla_label": "Wyślij",
+                "sla_label": SLA_SEND,
                 "min_slack": min(slack_by_vehicle.get(code, []), default=None),
             }
         )
@@ -248,7 +252,7 @@ def build_plan_view(
                 if remaining <= capacity_kg:
                     break
                 row["disposition"] = "send"
-                row["sla_label"] = "Wypychane z magazynu"
+                row["sla_label"] = SLA_OVERFLOW
                 remaining -= weight_by_vehicle.get(str(row["vehicle"]), 0.0)
 
     hold_codes = {str(r["vehicle"]) for r in route_rows if r.get("disposition") == "hold"}

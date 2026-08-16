@@ -763,6 +763,10 @@ async def plans_page() -> None:
                 complete_route_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
                 unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
                 unlock_btn = ui.button("Odblokuj cały plan", icon="restart_alt").props("outline")
+                enlarge_approve_btn: ui.button | None = None
+                enlarge_approve_route_btn: ui.button | None = None
+                enlarge_complete_route_btn: ui.button | None = None
+                enlarge_unlock_route_btn: ui.button | None = None
                 delete_plan_btn = ui.button("Usuń plan", icon="delete").props(
                     "outline color=negative"
                 )
@@ -824,6 +828,14 @@ async def plans_page() -> None:
                     gen_progress.set_value(min(0.9, round(current + 0.02, 3)))
 
             gen_tick = ui.timer(0.4, _bump_generate_progress, active=False)
+
+        def _set_enabled(btn: ui.button | None, enabled: bool) -> None:
+            if btn is None:
+                return
+            if enabled:
+                btn.enable()
+            else:
+                btn.disable()
 
         with ui.element("div").classes("cd-fleet-board w-full"):
             with ui.element("div").classes("cd-fleet-col"):
@@ -912,14 +924,6 @@ async def plans_page() -> None:
                         )
                     fill_warn_label = ui.label("").classes("text-sm text-amber-800")
                     fill_warn_label.set_visibility(False)
-                    enlarge_routes_btn.on_click(
-                        attach_grid_enlarge(
-                            routes_grid,
-                            routes_host,
-                            title="Trasy",
-                            compact_height="200px",
-                        )
-                    )
 
                     riding_cols = [
                         {"headerName": "Pojazd", "field": "vehicle", "filter": True},
@@ -1134,9 +1138,13 @@ async def plans_page() -> None:
             if has_run and plan_status in {"draft", "partial"}:
                 approve_btn.enable()
                 approve_route_btn.enable()
+                _set_enabled(enlarge_approve_btn, True)
+                _set_enabled(enlarge_approve_route_btn, True)
             else:
                 approve_btn.disable()
                 approve_route_btn.disable()
+                _set_enabled(enlarge_approve_btn, False)
+                _set_enabled(enlarge_approve_route_btn, False)
             if has_run:
                 unlock_route_btn.enable()
                 complete_route_btn.enable()
@@ -1144,6 +1152,8 @@ async def plans_page() -> None:
                 delete_plan_btn.enable()
                 map_btn.enable()
                 rename_btn.enable()
+                _set_enabled(enlarge_unlock_route_btn, True)
+                _set_enabled(enlarge_complete_route_btn, True)
             else:
                 unlock_route_btn.disable()
                 complete_route_btn.disable()
@@ -1151,6 +1161,8 @@ async def plans_page() -> None:
                 delete_plan_btn.disable()
                 map_btn.disable()
                 rename_btn.disable()
+                _set_enabled(enlarge_unlock_route_btn, False)
+                _set_enabled(enlarge_complete_route_btn, False)
             if result_text:
                 result_label.set_text(result_text)
                 result_label.set_visibility(True)
@@ -1273,6 +1285,7 @@ async def plans_page() -> None:
             result_label.set_visibility(False)
             generate_btn.disable()
             approve_btn.disable()
+            _set_enabled(enlarge_approve_btn, False)
             gen_error.set_text("")
             gen_error.set_visibility(False)
             gen_close_btn.set_visibility(False)
@@ -1561,6 +1574,36 @@ async def plans_page() -> None:
         delete_plan_btn.on_click(on_delete_plan)
         map_btn.on_click(on_show_map)
         enqueue_staying_btn.on_click(on_enqueue_staying)
+
+        def _routes_enlarge_toolbar() -> None:
+            nonlocal enlarge_approve_btn, enlarge_approve_route_btn
+            nonlocal enlarge_complete_route_btn, enlarge_unlock_route_btn
+            enlarge_approve_btn = ui.button("Zatwierdź pełne trasy", icon="done_all").props(
+                "color=positive"
+            )
+            enlarge_approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
+                "color=positive outline"
+            )
+            enlarge_complete_route_btn = ui.button("Zrealizowane", icon="done").props(
+                "color=positive"
+            )
+            enlarge_unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props(
+                "outline"
+            )
+            enlarge_approve_btn.on_click(on_approve)
+            enlarge_approve_route_btn.on_click(on_approve_route)
+            enlarge_complete_route_btn.on_click(on_complete_route)
+            enlarge_unlock_route_btn.on_click(on_unlock_route)
+
+        enlarge_routes_btn.on_click(
+            attach_grid_enlarge(
+                routes_grid,
+                routes_host,
+                title="Trasy",
+                compact_height="200px",
+                toolbar=_routes_enlarge_toolbar,
+            )
+        )
         await refresh_plan_view()
 
 

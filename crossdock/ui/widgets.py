@@ -47,14 +47,24 @@ def attach_grid_enlarge(
     *,
     title: str,
     compact_height: str,
+    toolbar: Callable[[], None] | None = None,
 ) -> Callable[[], None]:
-    """Move the same grid into a centered overlay; restore on close / Escape."""
+    """Move the same grid into a centered overlay; restore on close / Escape.
+
+    ``toolbar`` is built once into the overlay (e.g. route approve/unlock
+    actions) so dispatchers can work without closing the enlarged table.
+    """
     dialog = ui.dialog().classes("cd-enlarge-dialog")
     with dialog, ui.card().classes("cd-enlarge-card"):
         with ui.row().classes("cd-enlarge-head w-full items-center justify-between"):
             ui.label(title).classes("cd-enlarge-title")
             ui.button("Zamknij", icon="close", on_click=dialog.close).props("flat no-caps")
+        if toolbar is not None:
+            with ui.row().classes("cd-enlarge-toolbar cd-toolbar w-full"):
+                toolbar()
         enlarge_host = ui.element("div").classes("cd-enlarge-host")
+
+    extra_chrome = "7.5rem" if toolbar is not None else "4.5rem"
 
     def restore() -> None:
         parent = grid.parent_slot.parent if grid.parent_slot is not None else None
@@ -64,7 +74,7 @@ def attach_grid_enlarge(
 
     def open_enlarge() -> None:
         grid.move(enlarge_host)
-        grid.style("height: calc(85vh - 4.5rem); width: 100%")
+        grid.style(f"height: calc(85vh - {extra_chrome}); width: 100%")
         dialog.open()
 
     dialog.on("hide", lambda *_args: restore())

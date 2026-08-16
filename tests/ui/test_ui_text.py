@@ -50,6 +50,14 @@ def test_polish_labels_are_intact() -> None:
     assert "Aktywny plan" in dashboard
     assert "Trasy w drodze" in dashboard
     assert "Zrealizowane" in pages
+    assert "Zatwierdź trasę" in pages
+    assert "Odblokuj trasę" in pages
+    plan_view = ROOT / "crossdock" / "services" / "plan_view.py"
+    sla = plan_view.read_text(encoding="utf-8")
+    assert "Ostatni dzień na wysłanie - ryzyko opóźnienia" in sla
+    assert "Sugestia wysłania - brak miejsca w magazynie" in sla
+    assert "Ostatni dzień wyjazdu" not in sla
+    assert "Wypychane z magazynu" not in sla
     assert "Do kolejki" in pages
     assert "Kolejka wydań" in pages
     assert "W drodze" in pages

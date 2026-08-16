@@ -836,6 +836,12 @@ body, .nicegui-content, .q-page, .q-layout {
   font-family: var(--cd-font) !important;
 }
 .cd-enlarge-head { flex: 0 0 auto !important; }
+.cd-enlarge-toolbar {
+  flex: 0 0 auto !important;
+  flex-wrap: wrap !important;
+  gap: 0.5rem !important;
+  padding: 0.15rem 0 0.35rem !important;
+}
 .cd-enlarge-title {
   font-size: 1.125rem !important;
   font-weight: 600 !important;

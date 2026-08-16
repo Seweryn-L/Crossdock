@@ -17,7 +17,7 @@ Reguły twarde:
 - na jednej trasie jest najwyżej **N różnych punktów rozładunku** (domyślnie 3);
 - zlecenie cięższe niż największe auto wypada z planu.
 
-**Cel pakowania:** zmieścić jak najwięcej **kilogramów**, z premią dla zleceń, które **muszą wyjechać dziś** (ostatni dzień wyjazdu, spóźnione, pozycja 1 w kolejce, overflow magazynu). Nie minimalizuje kilometrów ani kosztu.
+**Cel pakowania:** zmieścić jak najwięcej **kilogramów**, z premią dla zleceń, które **muszą wyjechać dziś** (ostatni dzień na wysłanie, spóźnione, pozycja 1 w kolejce, brak miejsca w magazynie). Nie minimalizuje kilometrów ani kosztu.
 
 Dlatego dwa pobliskie miasta mogą wylądować na dwóch autach, a dalekie na jednym — jeśli tak lepiej wypełni naczepy. Grupowania „w jednym kierunku” na tym etapie **nie ma**; ten sam odbiorca (`drop_key`) naturalnie zajmuje jeden przystanek i łatwiej dopełnia auto.
 
@@ -48,7 +48,7 @@ Termin z Excela (albo **domyślny termin**: T + N dni, gdy w pliku nie ma daty) 
 | Luz | Co się dzieje |
 |---|---|
 | `> 0` | może czekać: pełne auto **jedzie**, słabe **zostaje** na dopełnienie |
-| `= 0` | ostatni dzień wyjazdu: jedzie nawet przy 40% |
+| `= 0` | ostatni dzień na wysłanie (ryzyko opóźnienia): jedzie nawet przy 40% |
 | `< 0` | spóźnione: i tak próbujemy wysłać dziś + czerwone ostrzeżenie |
 
 Wcześniejszy wyjazd (np. 5 dni przed terminem) jest w porządku **tylko gdy** trasa osiąga **min. zapełnienie** (domyślnie 0,90). Słabe auto nie wyjeżdża „bo solver je spakował”.
@@ -64,6 +64,8 @@ Po spakowaniu trasa dostaje decyzję, **zanim** zatwierdzisz plan:
 | Decyzja | Kiedy | Status zlecenia |
 |---|---|---|
 | **Wyślij** | zapełnienie ≥ próg **albo** na trasie jest zlecenie z luzem ≤ 0 **albo** magazyn pęka | po **Zatwierdź pełne trasy** → zatwierdzone |
+| **Ostatni dzień na wysłanie - ryzyko opóźnienia** | luz = 0: jedzie nawet niepełne | jak Wyślij |
+| **Sugestia wysłania - brak miejsca w magazynie** | słabe auto miało czekać, ale hub jest ponad pojemność | jak Wyślij |
 | **Czeka na dopełnienie** | spakowana, ale poniżej progu i wszystkie zlecenia mają luz > 0 | zostaje `planned` w szkicu; **nie** wchodzi w „Zatwierdź pełne trasy” |
 | **Zostaje poza FTL** | `UNASSIGNED` — brak miejsca w flocie | `new`, wraca do puli |
 
@@ -79,7 +81,7 @@ Przy **Następny dzień** + **Generuj** niezatwierdzone 40% wraca do solvera raz
 |---|---|---|
 | Dzień planowania | kalendarz | Sztuczne dziś (T) do SLA, importu bez daty i bufora. |
 | Wyjazd przed terminem | 2 dni | Ostatni legalny wyjazd = termin − ta liczba. |
-| Pojemność magazynu | 50 000 kg | Monitoring na Magazynie; overflow wypycha najpilniejsze. |
+| Pojemność magazynu | 50 000 kg | Monitoring na Magazynie; ponad pojemność → sugestia wysłania. |
 | Maks. punktów rozładunku | 3 | Twardy limit przy pakowaniu. `0` wyłącza limit (ryzyko „mleczarza”). |
 | Limit czasu planowania | 45 s | Górny czas liczenia. Około 40% idzie na pakowanie, 60% na kolejność. |
 | Ziarno losowości | 42 | Powtarzalność **pakowania**. Kolejność przystanków tego ziarna nie używa. |
@@ -98,7 +100,7 @@ Ekran **Magazyn** pokazuje stan dnia:
 
 - **kg w hubie** = zlecenia `new` + trasy czekające na dopełnienie, względem **pojemności** (placeholder do potwierdzenia z firmą);
 - odliczanie do najbliższego `must_leave_by`;
-- **overflow** (stan > pojemność) → solver i widok planu wymuszają wysyłkę tras o najmniejszym luzie, z ostrzeżeniem.
+- **brak miejsca** (stan > pojemność) → solver i widok planu sugerują wysyłkę tras o najmniejszym luzie.
 
 **Kolejka wydań:** pozycja 1 (nie wstrzymana) jest traktowana jak must-ship — pakowana pierwsza. Kolumny: termin, wyjechać do, luz, waga, odbiorca. Dyspozytor może wymusić wyjazd (góra kolejki / zatwierdź trasę) albo przytrzymać (wstrzymaj).
 
