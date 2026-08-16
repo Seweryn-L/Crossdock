@@ -6,9 +6,10 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from crossdock.config import Settings, get_settings
+from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.domain.models import OrderStatus
+from crossdock.domain.sla import slack_days
 from crossdock.optimization.buffering import decide_buffer
 from crossdock.optimization.dto import BufferCandidate, BufferDecision, BufferRates
 from crossdock.services.plan_view import build_plan_view
@@ -58,6 +59,8 @@ def list_buffer_candidates(
 
     depot = (settings.depot_latitude, settings.depot_longitude)
     distance = HaversineDistanceProvider()
+    planning = effective_planning_date(settings)
+    lead = settings.ship_lead_days
     candidates: list[BufferCandidate] = []
     for order in ordered:
         assert order.id is not None
@@ -74,6 +77,7 @@ def list_buffer_candidates(
                 weight_kg=weight,
                 pallet_count=max(int(pallets), 1),
                 distance_km=km,
+                slack_days=slack_days(order.delivery_date, planning, lead),
             )
         )
     return candidates

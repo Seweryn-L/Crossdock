@@ -38,6 +38,11 @@ class TestDefaultDeliveryDate:
         order = make_order(default_delivery_days=10)
         assert order.delivery_date == date.today() + timedelta(days=10)
 
+    def test_as_of_overrides_calendar_today(self) -> None:
+        as_of = date(2026, 4, 1)
+        order = make_order(as_of=as_of, default_delivery_days=7)
+        assert order.delivery_date == date(2026, 4, 8)
+
     @given(days=st.integers(min_value=0, max_value=365))
     def test_default_date_is_always_today_plus_configured_days(self, days: int) -> None:
         order = make_order(default_delivery_days=days)

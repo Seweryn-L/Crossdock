@@ -7,8 +7,9 @@ Key invariants enforced here:
   transport assignment is therefore always the whole order; any attempt
   to split its shipments raises ``InseparableShipmentsError``.
 - FR-024: orders created without an explicit delivery date receive a
-  default deadline of *today + N calendar days* (N comes from
-  configuration, default 7).
+  default deadline of *as_of + N calendar days* (N comes from
+  configuration, default 7). ``as_of`` is the planning/simulation day
+  when provided, otherwise the real calendar today.
 """
 
 from __future__ import annotations
@@ -131,15 +132,18 @@ class Order(BaseModel):
         delivery_location: Location,
         delivery_date: date | None = None,
         default_delivery_days: int = DEFAULT_DELIVERY_DAYS,
+        as_of: date | None = None,
         status: OrderStatus = OrderStatus.NEW,
     ) -> Order:
         """Create an order, applying the FR-024 default deadline.
 
         When ``delivery_date`` is missing the order gets
-        ``today + default_delivery_days`` calendar days.
+        ``as_of + default_delivery_days`` calendar days (``as_of`` falls
+        back to the real calendar today).
         """
         if delivery_date is None:
-            delivery_date = date.today() + timedelta(days=default_delivery_days)
+            base = as_of if as_of is not None else date.today()
+            delivery_date = base + timedelta(days=default_delivery_days)
         return cls(
             delivery_code=delivery_code,
             shipments=shipments,

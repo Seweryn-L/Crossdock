@@ -6,6 +6,7 @@ not in code, per project convention.
 
 from __future__ import annotations
 
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,9 @@ EDITABLE_SETTING_KEYS: frozenset[str] = frozenset(
         "ltl_cost_multiplier",
         "buffer_savings_threshold",
         "max_buffer_days",
+        "planning_date",
+        "ship_lead_days",
+        "warehouse_capacity_kg",
         "upload_max_mb",
         "backup_keep",
         "backup_hour",
@@ -70,6 +74,12 @@ class Settings(BaseSettings):
     storage_cost_per_pallet_day: float = 2.0
     ltl_cost_multiplier: float = 1.8
     max_buffer_days: int = 3
+    # Simulation clock: None = real calendar today. Used as "day T" for SLA.
+    planning_date: date | None = None
+    # Days before delivery_date that the order must leave the warehouse.
+    ship_lead_days: int = 2
+    # Cross-dock holding capacity for occupancy monitoring (kg placeholder).
+    warehouse_capacity_kg: float = 50000.0
     backup_dir: Path = Path("data/backups")
     backup_keep: int = 14
     backup_hour: int = 2
@@ -104,3 +114,9 @@ def get_settings() -> Settings:
             "wartości (w szczególności CROSSDOCK_STORAGE_SECRET)."
         ) from exc
     return _apply_runtime_overrides(base)
+
+
+def effective_planning_date(settings: Settings | None = None) -> date:
+    """Simulation day T, or the real calendar date when unset."""
+    cfg = settings if settings is not None else get_settings()
+    return cfg.planning_date if cfg.planning_date is not None else date.today()

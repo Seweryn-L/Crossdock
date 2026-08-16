@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy.orm import Session
 
+from crossdock.config import effective_planning_date, get_settings
 from crossdock.domain.models import Order, OrderStatus
+from crossdock.domain.sla import must_leave_by, slack_days
 from crossdock.storage.repositories import (
     AuditLogRepository,
     OrderRepository,
@@ -23,6 +26,9 @@ class QueueEntry:
     note: str | None
     city: str
     weight_kg: float | None
+    delivery_date: date | None = None
+    must_leave_on: date | None = None
+    slack_days: int | None = None
 
 
 def list_queue(session: Session) -> list[QueueEntry]:
@@ -44,17 +50,7 @@ def list_enqueue_candidates(session: Session) -> list[QueueEntry]:
     for order in OrderRepository(session).list_by_status(OrderStatus.NEW):
         if order.id is None or order.id in queued_ids:
             continue
-        candidates.append(
-            QueueEntry(
-                order_id=order.id,
-                delivery_code=order.delivery_code,
-                position=0,
-                status="available",
-                note=None,
-                city=order.delivery_location.city or "",
-                weight_kg=order.total_weight_kg,
-            )
-        )
+        candidates.append(_to_entry(0, "available", None, order))
     return candidates
 
 
@@ -173,6 +169,16 @@ def set_held(
 
 def _to_entry(position: int, status: str, note: str | None, order: Order) -> QueueEntry:
     assert order.id is not None
+    leave: date | None = None
+    slack: int | None = None
+    try:
+        settings = get_settings()
+        day = effective_planning_date(settings)
+        lead = settings.ship_lead_days
+        leave = must_leave_by(order.delivery_date, lead)
+        slack = slack_days(order.delivery_date, day, lead)
+    except Exception:
+        pass
     return QueueEntry(
         order_id=order.id,
         delivery_code=order.delivery_code,
@@ -181,4 +187,7 @@ def _to_entry(position: int, status: str, note: str | None, order: Order) -> Que
         note=note,
         city=order.delivery_location.city or "",
         weight_kg=order.total_weight_kg,
+        delivery_date=order.delivery_date,
+        must_leave_on=leave,
+        slack_days=slack,
     )

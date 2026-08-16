@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,12 @@ from crossdock.config import EDITABLE_SETTING_KEYS, Settings, get_settings
 from crossdock.storage.repositories import AuditLogRepository
 
 RUNTIME_SETTINGS_PATH = Path("data/runtime_settings.json")
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def load_runtime_overrides(path: Path | None = None) -> dict[str, Any]:
@@ -41,7 +48,10 @@ def save_runtime_overrides(
     for key, value in updates.items():
         if key not in EDITABLE_SETTING_KEYS:
             continue
-        current[key] = value
+        if value is None:
+            current.pop(key, None)
+            continue
+        current[key] = _jsonable(value)
     target.write_text(
         json.dumps(current, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -63,6 +73,8 @@ def editable_settings_snapshot(settings: Settings | None = None) -> dict[str, An
         val = getattr(cfg, key)
         if isinstance(val, Path):
             out[key] = str(val)
+        elif isinstance(val, date):
+            out[key] = val.isoformat()
         else:
             out[key] = val
     return out

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from pydantic import SecretStr
 
-from crossdock.config import Settings, get_settings
+from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.services import app_settings
 from crossdock.services.app_settings import (
     editable_settings_snapshot,
@@ -59,3 +60,20 @@ def test_get_settings_reads_runtime_overlay(tmp_path: Path, monkeypatch) -> None
     snap = editable_settings_snapshot(settings)
     assert "storage_secret" not in snap
     assert "port" not in snap
+
+
+def test_planning_date_roundtrip_iso(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "runtime_settings.json"
+    monkeypatch.setenv("CROSSDOCK_STORAGE_SECRET", "test-secret-not-for-production")
+    monkeypatch.setattr(app_settings, "RUNTIME_SETTINGS_PATH", path)
+    get_settings.cache_clear()
+
+    save_runtime_overrides({"planning_date": "2026-04-01", "ship_lead_days": 2}, path=path)
+    loaded = load_runtime_overrides(path)
+    assert loaded["planning_date"] == "2026-04-01"
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.planning_date == date(2026, 4, 1)
+    assert effective_planning_date(settings) == date(2026, 4, 1)
+    snap = editable_settings_snapshot(settings)
+    assert snap["planning_date"] == "2026-04-01"

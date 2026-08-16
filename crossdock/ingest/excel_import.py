@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -47,9 +48,11 @@ class ExcelOrderSource:
         mapping: ExcelColumnMapping,
         *,
         default_delivery_days: int = 7,
+        as_of: date | None = None,
     ) -> None:
         self._mapping = mapping
         self._default_delivery_days = default_delivery_days
+        self._as_of = as_of
 
     def load(self, source: Path | bytes) -> ImportReport:
         try:
@@ -81,6 +84,7 @@ class ExcelOrderSource:
                     row,
                     self._mapping,
                     default_delivery_days=self._default_delivery_days,
+                    as_of=self._as_of,
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 rejected.append(RowError(row_number=row_number, message=str(exc)))

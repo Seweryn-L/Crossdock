@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from crossdock.config import Settings, get_settings
+from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.domain.models import Location, Order, OrderStatus, Vehicle
+from crossdock.domain.sla import is_overdue, slack_days
 from crossdock.optimization.assignment import solve_assignment
 from crossdock.optimization.dto import (
     AssignmentRequest,
@@ -116,6 +117,9 @@ class PlanSolveRequest:
     max_drops_per_route: int
     depot: tuple[float, float]
     cost_per_km: float
+    planning_date: date | None = None
+    ship_lead_days: int = 2
+    extra_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,8 +137,15 @@ class PreparedPlanResult:
     skipped_no_coords: tuple[str, ...]
 
 
-def orders_to_solver(orders: list[Order]) -> tuple[list[SolverOrder], list[str]]:
+def orders_to_solver(
+    orders: list[Order],
+    *,
+    planning_date: date | None = None,
+    ship_lead_days: int = 2,
+    must_ship_ids: set[int] | None = None,
+) -> tuple[list[SolverOrder], list[str]]:
     """Map domain orders to solver DTOs; skip those without total weight."""
+    forced = must_ship_ids or set()
     solver_orders: list[SolverOrder] = []
     skipped: list[str] = []
     for order in orders:
@@ -144,12 +155,19 @@ def orders_to_solver(orders: list[Order]) -> tuple[list[SolverOrder], list[str]]
         if weight is None:
             skipped.append(order.delivery_code)
             continue
+        slack = None
+        if planning_date is not None:
+            slack = slack_days(order.delivery_date, planning_date, ship_lead_days)
+        must = order.id in forced or (slack is not None and slack <= 0)
         solver_orders.append(
             SolverOrder(
                 id=order.id,
                 delivery_code=order.delivery_code,
                 weight_kg=weight,
                 drop_key=drop_key_for_location(order.delivery_location),
+                delivery_date=order.delivery_date,
+                must_ship=must,
+                overdue=bool(slack is not None and is_overdue(slack)),
             )
         )
     return solver_orders, skipped
@@ -265,6 +283,8 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             time_limit_s=request.assignment_limit_s,
             seed=request.seed,
             max_drops_per_route=request.max_drops_per_route,
+            planning_date=request.planning_date,
+            ship_lead_days=request.ship_lead_days,
         )
     )
 
@@ -309,6 +329,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             + ", ".join(skipped_coord_codes[:10])
             + ("…" if len(skipped_coord_codes) > 10 else "")
         )
+    warnings.extend(request.extra_warnings)
 
     assignment = AssignmentResult(
         loads=assignment.loads,
@@ -424,12 +445,69 @@ class PlanningService:
                 kept.append(order)
         return kept, skipped
 
+    def _must_ship_ids(self, orders: list[Order]) -> set[int]:
+        planning = effective_planning_date(self._settings)
+        lead = self._settings.ship_lead_days
+        forced: set[int] = set()
+        queued = WarehouseQueueRepository(self._session).list_ordered()
+        if queued:
+            top = queued[0]
+            if top.status != "held":
+                forced.add(top.order_id)
+        for order in orders:
+            if order.id is None:
+                continue
+            if slack_days(order.delivery_date, planning, lead) <= 0:
+                forced.add(order.id)
+        capacity = float(self._settings.warehouse_capacity_kg)
+        if capacity > 0:
+            weights = {o.id: (o.total_weight_kg or 0.0) for o in orders if o.id is not None}
+            total = sum(weights.values())
+            excess = total - capacity
+            if excess > 0:
+                must_kg = sum(weights.get(oid, 0.0) for oid in forced)
+                need = excess - must_kg
+                if need > 0:
+                    optionals = [o for o in orders if o.id is not None and o.id not in forced]
+                    optionals.sort(
+                        key=lambda o: (
+                            slack_days(o.delivery_date, planning, lead),
+                            -(o.total_weight_kg or 0.0),
+                        )
+                    )
+                    acc = 0.0
+                    for order in optionals:
+                        assert order.id is not None
+                        forced.add(order.id)
+                        acc += weights.get(order.id, 0.0)
+                        if acc >= need:
+                            break
+        return forced
+
+    def _stock_overflow_warning(self, orders: list[Order]) -> str | None:
+        capacity = float(self._settings.warehouse_capacity_kg)
+        if capacity <= 0:
+            return None
+        total = sum(float(o.total_weight_kg or 0.0) for o in orders)
+        if total <= capacity:
+            return None
+        return (
+            f"Magazyn ponad pojemność ({total:.0f} / {capacity:.0f} kg) — "
+            "wypycham najpilniejsze zlecenia."
+        )
+
     def run_assignment(self, *, username: str) -> PlanningOutcome:
         orders, held_skipped = self._exclude_held(
             OrderRepository(self._session).list_by_status(OrderStatus.NEW)
         )
         vehicles = VehicleRepository(self._session).list_active()
-        solver_orders, skipped = orders_to_solver(orders)
+        must_ids = self._must_ship_ids(orders)
+        solver_orders, skipped = orders_to_solver(
+            orders,
+            planning_date=effective_planning_date(self._settings),
+            ship_lead_days=self._settings.ship_lead_days,
+            must_ship_ids=must_ids,
+        )
         solver_vehicles = vehicles_to_solver(vehicles)
 
         request = AssignmentRequest(
@@ -438,6 +516,8 @@ class PlanningService:
             time_limit_s=self._settings.solver_time_limit_s,
             seed=self._settings.solver_seed,
             max_drops_per_route=self._settings.max_drops_per_route,
+            planning_date=effective_planning_date(self._settings),
+            ship_lead_days=self._settings.ship_lead_days,
         )
         result = solve_assignment(request)
 
@@ -454,6 +534,10 @@ class PlanningService:
                 + ", ".join(skipped[:10])
                 + ("…" if len(skipped) > 10 else "")
             )
+        overflow = self._stock_overflow_warning(orders)
+        if overflow:
+            warnings.append(overflow)
+        if warnings != list(result.warnings):
             result = AssignmentResult(
                 loads=result.loads,
                 unassigned_order_ids=result.unassigned_order_ids,
@@ -554,7 +638,14 @@ class PlanningService:
             if order.id is not None:
                 by_id[order.id] = order
         orders, held_skipped = self._exclude_held(list(by_id.values()))
-        solver_orders, skipped_weight = orders_to_solver(orders)
+        planning = effective_planning_date(self._settings)
+        must_ids = self._must_ship_ids(orders)
+        solver_orders, skipped_weight = orders_to_solver(
+            orders,
+            planning_date=planning,
+            ship_lead_days=self._settings.ship_lead_days,
+            must_ship_ids=must_ids,
+        )
         geos: list[OrderGeoSnapshot] = []
         for order in orders:
             geo = _order_to_geo(order)
@@ -575,6 +666,11 @@ class PlanningService:
             max_drops_per_route=self._settings.max_drops_per_route,
             depot=(self._settings.depot_latitude, self._settings.depot_longitude),
             cost_per_km=self._settings.cost_per_km,
+            planning_date=planning,
+            ship_lead_days=self._settings.ship_lead_days,
+            extra_warnings=tuple(
+                w for w in [self._stock_overflow_warning(orders)] if w is not None
+            ),
         )
 
     def persist_prepared_plan(self, prepared: PreparedPlanResult, *, username: str) -> PlanOutcome:
@@ -753,11 +849,21 @@ class PlanningService:
         if run.plan_status == "approved":
             raise ValueError(f"Plan run #{run_id} jest już zatwierdzony.")
 
+        from crossdock.services.plan_view import build_plan_view
+
+        view = build_plan_view(self._session, settings=self._settings, run_id=run_id)
+        send_codes = {
+            str(row["vehicle"])
+            for row in view.routes
+            if row.get("disposition") == "send" and row.get("route_status") != "approved"
+        }
         items = repo.list_items_for_run(run_id)
         to_approve = [
             item.order_id
             for item in items
-            if item.sequence is not None and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
+            if item.sequence is not None
+            and item.vehicle_code not in {"UNASSIGNED", "UNROUTED"}
+            and item.vehicle_code in send_codes
         ]
         order_repo = OrderRepository(self._session)
         approved: list[int] = []
@@ -765,16 +871,29 @@ class PlanningService:
             order = order_repo.get_by_id(oid)
             if order is not None and order.status == OrderStatus.PLANNED:
                 approved.append(oid)
+        if not approved:
+            hold_n = sum(1 for row in view.routes if row.get("disposition") == "hold")
+            if hold_n:
+                raise ValueError(
+                    "Brak pełnych tras do zatwierdzenia — słabe auta czekają na dopełnienie."
+                )
         if approved:
             order_repo.set_status_many(approved, OrderStatus.APPROVED)
         dequeued = self._dequeue_orders(approved)
         vehicle_repo = VehicleRepository(self._session)
+        any_hold = False
         for route in repo.list_routes_for_run(run_id):
-            route.route_status = "approved"
-            if route.vehicle_id is not None:
-                vehicle_repo.set_busy(route.vehicle_id, True)
+            if route.vehicle_code in send_codes:
+                route.route_status = "approved"
+                if route.vehicle_id is not None:
+                    vehicle_repo.set_busy(route.vehicle_id, True)
+            elif route.route_status != "approved":
+                any_hold = True
 
-        repo.approve_run(run_id, username=username)
+        if any_hold:
+            self._sync_plan_status_from_routes(run_id, username=username)
+        else:
+            repo.approve_run(run_id, username=username)
         AuditLogRepository(self._session).record(
             username=username,
             action="planning.approve",

@@ -8,12 +8,12 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from nicegui import app, run, ui
 
-from crossdock.config import get_settings
+from crossdock.config import effective_planning_date, get_settings
 from crossdock.domain.models import Location, Order, Vehicle, VehicleType
 from crossdock.services.app_settings import (
     editable_settings_snapshot,
@@ -62,6 +62,7 @@ from crossdock.services.warehouse_queue import (
     move_order,
     set_held,
 )
+from crossdock.services.warehouse_stock import warehouse_snapshot
 from crossdock.storage.database import session_scope
 from crossdock.storage.repositories import (
     AssignmentRepository,
@@ -305,6 +306,21 @@ def _persist_plan_job(
         len(plan.routing.unrouted_order_ids),
         list(plan.warnings),
     )
+
+
+def _save_planning_date_job(iso: str | None, username: str) -> str:
+    with session_scope() as session:
+        save_runtime_overrides({"planning_date": iso or None}, session=session, username=username)
+    return effective_planning_date().isoformat()
+
+
+def _advance_planning_date_job(username: str) -> str:
+    nxt = effective_planning_date() + timedelta(days=1)
+    with session_scope() as session:
+        save_runtime_overrides(
+            {"planning_date": nxt.isoformat()}, session=session, username=username
+        )
+    return nxt.isoformat()
 
 
 def _approve_plan_job(run_id: int, username: str) -> tuple[int, int]:
@@ -681,12 +697,11 @@ async def plans_page() -> None:
         ops_page_header(
             "Plany FTL",
             "FTL (full truckload) — transporty całopojazdowe. "
-            "System proponuje pełne auta z cross-docku. "
-            "Co nie weszło na trasę, traktuj jako towar zostający w magazynie — "
-            "możesz wrzucić do kolejki na Magazynie. "
+            "Pełne auta wyjeżdżają, słabe czekają na dopełnienie. "
+            "Wyjazd ok. 2 dni przed terminem u odbiorcy. "
             f"Maks. {settings.max_drops_per_route} punktów rozładunku / trasę · "
             f"{settings.cost_per_km:.2f} €/km. "
-            "Zatwierdzaj pojedyncze trasy — zajęty pojazd wypada z kolejnych generacji.",
+            "Zatwierdzaj pełne trasy — słabe zostają w magazynie na kolejny dzień.",
         )
 
         ctx = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
@@ -739,7 +754,7 @@ async def plans_page() -> None:
                 new_plan_btn = ui.button("Nowy plan", icon="note_add").props("outline")
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
                 generate_btn = ui.button("Generuj plan", icon="auto_awesome").props("color=primary")
-                approve_btn = ui.button("Zatwierdź wszystkie trasy", icon="done_all").props(
+                approve_btn = ui.button("Zatwierdź pełne trasy", icon="done_all").props(
                     "color=positive"
                 )
                 approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
@@ -752,6 +767,40 @@ async def plans_page() -> None:
                     "outline color=negative"
                 )
                 map_btn = ui.button("Pokaż na mapie", icon="map").props("outline")
+            sim_day = effective_planning_date(settings)
+            with ui.row().classes("cd-toolbar w-full items-end"):
+                planning_date_in = (
+                    ui.input(
+                        "Dzień planowania",
+                        value=sim_day.isoformat(),
+                    )
+                    .props("type=date")
+                    .classes("w-48")
+                )
+                sim_label = ui.label(
+                    "symulacja" if settings.planning_date is not None else "data kalendarzowa"
+                ).classes("text-sm text-gray-600")
+
+                async def on_apply_planning_date() -> None:
+                    raw = str(planning_date_in.value or "").strip()
+                    iso = raw or None
+                    applied = await run.io_bound(_save_planning_date_job, iso, username)
+                    planning_date_in.value = applied
+                    sim_label.set_text("symulacja" if iso else "data kalendarzowa")
+                    ui.notify(f"Dzień planowania: {applied}", type="positive")
+                    await refresh_plan_view()
+
+                async def on_next_planning_day() -> None:
+                    applied = await run.io_bound(_advance_planning_date_job, username)
+                    planning_date_in.value = applied
+                    sim_label.set_text("symulacja")
+                    ui.notify(f"Następny dzień: {applied}", type="positive")
+                    await refresh_plan_view()
+
+                ui.button("Zastosuj dzień", on_click=on_apply_planning_date).props("outline")
+                ui.button("Następny dzień", icon="skip_next", on_click=on_next_planning_day).props(
+                    "outline"
+                )
             blocker_label = ui.label("").classes("text-sm text-red-700")
             blocker_label.set_visibility(False)
             result_label = ui.label("").classes("text-sm text-gray-600")
@@ -838,6 +887,12 @@ async def plans_page() -> None:
                                             "sortable": True,
                                             "width": 140,
                                         },
+                                        {
+                                            "headerName": "Decyzja",
+                                            "field": "sla_label",
+                                            "filter": True,
+                                            "flex": 1,
+                                        },
                                     ],
                                     "rowData": [],
                                     "rowSelection": "single",
@@ -879,11 +934,13 @@ async def plans_page() -> None:
                         {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
                         {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
                         {"headerName": "Zapełnienie", "field": "fill_pct"},
+                        {"headerName": "SLA", "field": "sla", "filter": True},
                     ]
                     stay_cols = [
                         {"headerName": "Kod dostawy", "field": "delivery_code", "filter": True},
                         {"headerName": "ID", "field": "order_id", "sortable": True, "width": 80},
                         {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                        {"headerName": "SLA", "field": "sla", "filter": True},
                         {"headerName": "Powód", "field": "reason", "flex": 1},
                     ]
 
@@ -925,7 +982,10 @@ async def plans_page() -> None:
                             )
                         with ui.tab_panel(tab_staying):
                             with ui.row().classes("cd-tab-tools"):
-                                info_hint("Zlecenia bez miejsca w flocie — towar zostaje w hubie.")
+                                info_hint(
+                                    "Zlecenia bez miejsca w flocie oraz słabe auta czekające "
+                                    "na dopełnienie (ten sam odbiorca / pełniejsza naczepa)."
+                                )
                                 enlarge_staying_btn = ui.button(
                                     "Powiększ", icon="open_in_full"
                                 ).props("flat dense no-caps")
@@ -1142,11 +1202,30 @@ async def plans_page() -> None:
                     cost_wrap.set_visibility(False)
             routes_grid.options["rowData"] = view.routes
             routes_grid.update()
+            hold_n = sum(1 for row in view.routes if row.get("disposition") == "hold")
+            overdue_n = sum(
+                1
+                for row in view.routes
+                if isinstance(row.get("min_slack"), int) and int(row["min_slack"]) < 0
+            )
+            warn_bits: list[str] = []
+            if hold_n:
+                warn_bits.append(
+                    f"{hold_n} tras czeka na dopełnienie "
+                    f"(poniżej {view.min_fill_ratio * 100:.0f}% i jest luz SLA)."
+                )
             low = view.below_min_fill_count
-            if low:
-                fill_warn_label.set_text(
+            if low and not hold_n:
+                warn_bits.append(
                     f"{low} tras poniżej progu zapełnienia (min. {view.min_fill_ratio * 100:.0f}%)."
                 )
+            if overdue_n:
+                lead = settings.ship_lead_days
+                warn_bits.append(
+                    f"{overdue_n} tras spóźnionych względem wyjazdu {lead} dni przed terminem."
+                )
+            if warn_bits:
+                fill_warn_label.set_text(" ".join(warn_bits))
                 fill_warn_label.set_visibility(True)
             else:
                 fill_warn_label.set_text("")
@@ -1344,7 +1423,7 @@ async def plans_page() -> None:
                 return
             await refresh_plan_view()
             ui.notify(
-                f"Zatwierdzono wszystkie trasy w planie #{approved_run}: {count} zleceń.",
+                f"Zatwierdzono pełne trasy w planie #{approved_run}: {count} zleceń.",
                 type="positive",
             )
 
@@ -1733,9 +1812,18 @@ async def warehouse_page() -> None:
     with page_frame("Magazyn"):
         ops_page_header(
             "Magazyn",
-            "Kolejka priorytetowa wydań, trasy w drodze i propozycja buforowania. "
-            "Ręczny priorytet wydań (całe zlecenia).",
+            "Stan zapełnienia, odliczanie do wyjazdu, kolejka priorytetowa i bufor. "
+            "Ręczny priorytet (pozycja 1) jedzie pierwszy przy generowaniu planu.",
         )
+
+        with ui.element("div").classes("cd-wh-card w-full"):
+            ui.label("Stan magazynu").classes("cd-wh-card-title")
+            with ui.row().classes("w-full items-baseline gap-4 flex-wrap"):
+                occ_used = ui.label("— kg").classes("text-xl font-bold")
+                occ_cap = ui.label("—").classes("text-sm text-gray-600")
+                occ_slack = ui.label("—").classes("text-sm")
+            occ_warn = ui.label("").classes("text-sm text-red-700")
+            occ_warn.set_visibility(False)
 
         with ui.element("div").classes("cd-wh-card w-full"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -1756,6 +1844,13 @@ async def warehouse_page() -> None:
                                 {"headerName": "Kod", "field": "delivery_code", "filter": True},
                                 {"headerName": "Miasto", "field": "city", "filter": True},
                                 {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
+                                {"headerName": "Termin", "field": "delivery_date"},
+                                {"headerName": "Wyjechać do", "field": "must_leave_on"},
+                                {
+                                    "headerName": "Luz [dni]",
+                                    "field": "slack_days",
+                                    "sortable": True,
+                                },
                             ],
                             "rowData": [],
                             "rowSelection": "multiple",
@@ -1801,6 +1896,13 @@ async def warehouse_page() -> None:
                                 {"headerName": "Kod", "field": "delivery_code", "filter": True},
                                 {"headerName": "Miasto", "field": "city"},
                                 {"headerName": "Waga [kg]", "field": "weight_kg"},
+                                {"headerName": "Termin", "field": "delivery_date"},
+                                {"headerName": "Wyjechać do", "field": "must_leave_on"},
+                                {
+                                    "headerName": "Luz [dni]",
+                                    "field": "slack_days",
+                                    "sortable": True,
+                                },
                                 {"headerName": "Status", "field": "status"},
                                 {"headerName": "ID", "field": "order_id", "width": 80},
                             ],
@@ -1953,7 +2055,7 @@ async def warehouse_page() -> None:
 
         async def refresh_all() -> None:
             try:
-                candidates, entries, in_transit = await run.io_bound(
+                candidates, entries, in_transit, snap = await run.io_bound(
                     _load_warehouse_view, _active_run_id_from_storage()
                 )
             except Exception as exc:
@@ -1965,6 +2067,13 @@ async def warehouse_page() -> None:
                     "delivery_code": e.delivery_code,
                     "city": e.city,
                     "weight_kg": (round(e.weight_kg, 1) if e.weight_kg is not None else "?"),
+                    "delivery_date": (
+                        e.delivery_date.isoformat() if e.delivery_date is not None else "—"
+                    ),
+                    "must_leave_on": (
+                        e.must_leave_on.isoformat() if e.must_leave_on is not None else "—"
+                    ),
+                    "slack_days": e.slack_days if e.slack_days is not None else "—",
                 }
                 for e in candidates
             ]
@@ -1976,6 +2085,13 @@ async def warehouse_page() -> None:
                     "delivery_code": e.delivery_code,
                     "city": e.city,
                     "weight_kg": (round(e.weight_kg, 1) if e.weight_kg is not None else "?"),
+                    "delivery_date": (
+                        e.delivery_date.isoformat() if e.delivery_date is not None else "—"
+                    ),
+                    "must_leave_on": (
+                        e.must_leave_on.isoformat() if e.must_leave_on is not None else "—"
+                    ),
+                    "slack_days": e.slack_days if e.slack_days is not None else "—",
                     "status": queue_status_pl(e.status),
                     "order_id": e.order_id,
                 }
@@ -1995,6 +2111,29 @@ async def warehouse_page() -> None:
             ]
             transit_grid.update()
             transit_empty.set_visibility(len(in_transit) == 0)
+            occ_used.set_text(
+                f"{snap.used_kg:.0f} kg ({snap.fill_ratio * 100:.0f}%) · {snap.order_count} zleceń"
+            )
+            occ_cap.set_text(
+                f"pojemność {snap.capacity_kg:.0f} kg · dzień {snap.planning_date.isoformat()}"
+            )
+            if snap.nearest_must_leave is not None:
+                slack_txt = (
+                    f"luz {snap.nearest_slack} dni" if snap.nearest_slack is not None else ""
+                )
+                occ_slack.set_text(
+                    f"najbliższy wyjazd {snap.nearest_must_leave.isoformat()} ({slack_txt})"
+                )
+            else:
+                occ_slack.set_text("brak towaru w magazynie")
+            if snap.overflow:
+                occ_warn.set_text(
+                    "Magazyn ponad pojemność — solver wypchnie najpilniejsze zlecenia."
+                )
+                occ_warn.set_visibility(True)
+            else:
+                occ_warn.set_text("")
+                occ_warn.set_visibility(False)
 
         async def on_enqueue_selected() -> None:
             selected = await candidates_grid.get_selected_rows()
@@ -2119,6 +2258,7 @@ def _load_warehouse_view(run_id: int | None = None):
             list_enqueue_candidates(session),
             list_queue(session),
             list_in_transit_routes(session, run_id=run_id),
+            warehouse_snapshot(session, run_id=run_id),
         )
 
 
@@ -2463,6 +2603,9 @@ PARAM_LABELS_PL = {
     "ltl_cost_multiplier": "Mnożnik drobnicy (LTL)",
     "buffer_savings_threshold": "Próg oszczędności bufora (0-1)",
     "max_buffer_days": "Maks. dni buforowania",
+    "planning_date": "Dzień planowania (symulacja)",
+    "ship_lead_days": "Wyjazd przed terminem [dni]",
+    "warehouse_capacity_kg": "Pojemność magazynu [kg]",
     "upload_max_mb": "Limit uploadu Excel [MB]",
     "backup_keep": "Ile kopii zapasowych trzymać",
     "backup_hour": "Godzina nocnej kopii",
@@ -2743,6 +2886,8 @@ async def settings_page() -> None:
                             "solver_time_limit_s",
                             "solver_seed",
                             "default_delivery_days",
+                            "ship_lead_days",
+                            "warehouse_capacity_kg",
                         ],
                     ),
                     (
@@ -2774,6 +2919,18 @@ async def settings_page() -> None:
                                 value=float(snap[key]),
                                 format="%.4g",
                             ).classes("w-56")
+                ui.label("Zegar symulacji").classes("font-medium mt-2")
+                planning_in = (
+                    ui.input(
+                        PARAM_LABELS_PL["planning_date"],
+                        value=str(snap.get("planning_date") or ""),
+                    )
+                    .props("type=date")
+                    .classes("w-56")
+                )
+                ui.label("Puste pole = prawdziwa data kalendarzowa.").classes(
+                    "text-xs text-gray-600"
+                )
 
                 async def on_save_params() -> None:
                     updates = {key: float(widget.value or 0) for key, widget in fields.items()}
@@ -2783,12 +2940,16 @@ async def settings_page() -> None:
                         "solver_seed",
                         "default_delivery_days",
                         "max_buffer_days",
+                        "ship_lead_days",
                         "upload_max_mb",
                         "backup_keep",
                         "backup_hour",
                         "backup_minute",
                     ):
-                        updates[key] = int(updates[key])
+                        if key in updates:
+                            updates[key] = int(updates[key])
+                    raw_date = str(planning_in.value or "").strip()
+                    updates["planning_date"] = raw_date or None
                     await run.io_bound(_save_params_job, updates, username)
                     ui.notify("Zapisano parametry.", type="positive")
 

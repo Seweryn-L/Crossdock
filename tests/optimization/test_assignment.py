@@ -87,7 +87,49 @@ def test_assignment_is_reproducible_with_same_seed() -> None:
     assert [load.order_ids for load in first.loads] == [load.order_ids for load in second.loads]
 
 
-def test_empty_orders() -> None:
+def test_must_ship_beats_heavier_optional() -> None:
+    request = AssignmentRequest(
+        orders=(
+            SolverOrder(id=1, delivery_code="OPTIONAL", weight_kg=2500, must_ship=False),
+            SolverOrder(id=2, delivery_code="MUST", weight_kg=2000, must_ship=True),
+        ),
+        vehicles=(SolverVehicle(id=1, code="T1", weight_capacity_kg=3000),),
+        time_limit_s=5.0,
+        seed=42,
+    )
+    result = solve_assignment(request)
+    assert result.status in {"OPTIMAL", "FEASIBLE"}
+    assert 2 in result.assigned_order_ids
+    assert 1 in result.unassigned_order_ids
+
+
+def test_unassigned_must_ship_is_warned() -> None:
+    request = AssignmentRequest(
+        orders=(SolverOrder(id=1, delivery_code="MUST", weight_kg=9000, must_ship=True),),
+        vehicles=(SolverVehicle(id=1, code="BUS", weight_capacity_kg=3500),),
+        time_limit_s=2.0,
+        seed=1,
+    )
+    result = solve_assignment(request)
+    assert 1 in result.unassigned_order_ids
+    assert any("muszą wyjechać dziś" in w for w in result.warnings)
+
+
+def test_overdue_orders_are_warned() -> None:
+    request = AssignmentRequest(
+        orders=(
+            SolverOrder(id=1, delivery_code="LATE", weight_kg=1000, overdue=True, must_ship=True),
+        ),
+        vehicles=(SolverVehicle(id=1, code="T1", weight_capacity_kg=3500),),
+        time_limit_s=2.0,
+        seed=1,
+        ship_lead_days=2,
+    )
+    result = solve_assignment(request)
+    assert any("Spóźnione" in w for w in result.warnings)
+
+
+def test_empty_orders_status() -> None:
     request = AssignmentRequest(
         orders=(),
         vehicles=(SolverVehicle(id=1, code="V1", weight_capacity_kg=1000),),

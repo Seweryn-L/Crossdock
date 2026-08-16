@@ -73,6 +73,28 @@ def test_row_mapper_fr024_when_delivery_date_missing() -> None:
     assert order.shipments[0].shipment_number == "123456"
 
 
+def test_row_mapper_fr024_uses_as_of_not_calendar_today() -> None:
+    mapping = load_excel_column_mapping(MAPPING)
+    row = {
+        "Order Ref": "TEST-REF-ASOF",
+        "TMS ID": 123456,
+        "Origin Name": "HUB",
+        "Origin City": "Antwerp",
+        "Origin Country": "BE",
+        "Origin Postal Code": "2000",
+        "Destination Name": "CUST",
+        "Destination City": "Paris",
+        "Destination Country": "FR",
+        "Destination Postal Code": "75001",
+        "Product Weight": 100,
+        "Drop Plan Date Start": None,
+        "Equipment": "EU: 09 CURTAIN / BOX TRAILER",
+    }
+    as_of = date(2026, 4, 1)
+    order = row_to_shipment_and_locations(row, mapping, default_delivery_days=7, as_of=as_of)
+    assert order.delivery_date == date(2026, 4, 8)
+
+
 def test_row_mapper_rejects_missing_order_ref() -> None:
     mapping = load_excel_column_mapping(MAPPING)
     row = {

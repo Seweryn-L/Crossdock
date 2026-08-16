@@ -30,6 +30,8 @@ def _settings() -> Settings:
         max_buffer_days=3,
         depot_latitude=51.176,
         depot_longitude=4.836,
+        planning_date=date(2026, 7, 25),
+        ship_lead_days=2,
     )
 
 
@@ -85,3 +87,25 @@ def test_compute_buffer_proposals_does_not_write_audit(db_session: Session) -> N
     assert bundle.decisions
     audits = db_session.scalars(select(AuditLogRow)).all()
     assert audits == []
+
+
+def test_buffer_proposals_ship_now_when_slack_gone(db_session: Session) -> None:
+    hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    dest = Location(name="Far", city="Paris", country="FR", latitude=48.85, longitude=2.35)
+    OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="DUE",
+                shipments=[Shipment(shipment_number="S1", weight_kg=500, pallet_count=2)],
+                pickup_location=hub,
+                delivery_location=dest,
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )
+    settings = _settings(planning_date=date(2026, 7, 30))
+    bundle = compute_buffer_proposals(db_session, settings=settings)
+    assert bundle.decisions
+    assert all(d.action == "ship_now" for d in bundle.decisions)
+    assert all(d.buffer_days == 0 for d in bundle.decisions)
