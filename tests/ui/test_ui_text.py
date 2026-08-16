@@ -48,6 +48,15 @@ def test_polish_labels_are_intact() -> None:
     assert "Zostaje w magazynie" in dashboard
     assert "Wszystkie zlecenia" in dashboard
     assert "Aktywny plan" in dashboard
+    assert "Trasy w drodze" in dashboard
+    assert "Zrealizowane" in pages
+    assert "Do kolejki" in pages
+    assert "Kolejka wydań" in pages
+    assert "W drodze" in pages
+    assert (
+        "Kolejka magazynowa"
+        not in pages.split("async def warehouse_page")[1].split("def _load_warehouse_view")[0]
+    )
 
 
 def test_plan_label_format() -> None:
@@ -137,8 +146,7 @@ def test_plan_generation_keeps_sqlite_off_cpu_bound() -> None:
 def test_warehouse_does_not_propose_on_load() -> None:
     pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
     warehouse = pages.split("async def warehouse_page")[1].split("def _load_warehouse_view")[0]
-    tail = "\n".join(warehouse.rstrip().splitlines()[-6:])
-    assert "await refresh_all()" in tail
-    assert "await refresh_buffer()" not in tail
+    last = warehouse.rstrip().splitlines()[-1].strip()
+    assert last == "await refresh_all()"
     assert "compute_buffer_proposals" in pages
     assert "propose_buffering" not in pages

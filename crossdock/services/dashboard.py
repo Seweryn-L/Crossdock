@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from crossdock.domain.models import OrderStatus
-from crossdock.services.plan_view import build_plan_view
+from crossdock.services.plan_view import InTransitRoute, build_plan_view, in_transit_route_from_row
 from crossdock.services.system_status import collect_system_status
 from crossdock.services.warehouse_queue import list_queue
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository
@@ -30,6 +30,7 @@ class DashboardSnapshot:
     queue_count: int
     last_import_summary: str | None
     staying_order_ids: tuple[int, ...]
+    in_transit: tuple[InTransitRoute, ...]
 
 
 def collect_dashboard(session: Session, *, run_id: int | None = None) -> DashboardSnapshot:
@@ -60,6 +61,9 @@ def collect_dashboard(session: Session, *, run_id: int | None = None) -> Dashboa
         )
         for row in repo.list_recent_runs(limit=30)
     )
+    in_transit = tuple(
+        route for row in view.routes if (route := in_transit_route_from_row(row)) is not None
+    )
     return DashboardSnapshot(
         total_orders=total,
         new_orders=new_n,
@@ -75,4 +79,5 @@ def collect_dashboard(session: Session, *, run_id: int | None = None) -> Dashboa
         queue_count=queue_count,
         last_import_summary=status.last_import_summary,
         staying_order_ids=view.staying_order_ids if view.summary else (),
+        in_transit=in_transit,
     )

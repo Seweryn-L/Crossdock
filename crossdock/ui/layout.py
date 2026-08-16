@@ -389,6 +389,48 @@ body, .nicegui-content, .q-page, .q-layout {
   margin: 0 !important;
   color: var(--cd-heading) !important;
 }
+.cd-plan-select {
+  min-width: min(100%, 36rem) !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+.cd-plan-select .q-field__native,
+.cd-plan-select .q-field__input,
+.cd-plan-select .q-field__control-container {
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+}
+.cd-plan-select .q-field__control {
+  min-height: 2.75rem !important;
+  height: auto !important;
+}
+.cd-plan-select-popup {
+  min-width: 36rem !important;
+  max-width: min(92vw, 48rem) !important;
+}
+.cd-wh-card {
+  font-family: var(--cd-font) !important;
+  background: var(--cd-card) !important;
+  border: 1px solid var(--cd-border) !important;
+  border-radius: 14px !important;
+  padding: 1rem 1.1rem 1.1rem !important;
+  margin-bottom: 0.85rem !important;
+}
+.cd-wh-card-title {
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  color: var(--cd-heading) !important;
+  margin: 0 !important;
+}
+.cd-ops-in-transit {
+  margin-top: 0.75rem !important;
+  padding-top: 0.75rem !important;
+  border-top: 1px solid var(--cd-border) !important;
+}
+.cd-in-transit-radio .q-radio {
+  padding: 0.2rem 0 !important;
+}
 .cd-ops-plan-sub {
   font-family: var(--cd-font) !important;
   color: var(--cd-muted) !important;
@@ -720,6 +762,10 @@ body, .nicegui-content, .q-page, .q-layout {
 .ag-row.cd-row-approved {
   background: var(--cd-ride-bg) !important;
   border-left: 3px solid var(--cd-accent-solid) !important;
+}
+.ag-row.cd-row-completed {
+  background: var(--cd-chip-bg) !important;
+  border-left: 3px solid var(--cd-muted) !important;
 }
 .ag-row.cd-row-proposed {
   background: var(--cd-card) !important;

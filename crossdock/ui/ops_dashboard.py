@@ -27,6 +27,7 @@ def render_ops_focus_dashboard(
     on_enqueue_staying: Callable[[], Awaitable[Any] | Any],
     open_map: Callable[[], None],
     on_select_plan: Callable[[int], Awaitable[Any] | Any] | None = None,
+    on_complete_route: Callable[[int], Awaitable[Any] | Any] | None = None,
 ) -> None:
     """Paint the Ops Focus home layout inside an already-open page_frame."""
     plan_title = snap.plan_label or "Brak planu"
@@ -55,16 +56,22 @@ def render_ops_focus_dashboard(
 
     with ui.element("div").classes("cd-ops-hero"):
         with ui.row().classes("w-full items-start justify-between flex-wrap gap-4"):
-            with ui.column().classes("gap-1").style("min-width:min(100%, 28rem);flex:1;"):
+            with ui.column().classes("gap-1").style("min-width:min(100%, 40rem);flex:1;"):
                 ui.label("Aktywny plan").classes("cd-ops-eyebrow")
                 if select_options:
-                    plan_select = ui.select(
-                        options=select_options,
-                        value=(
-                            str(snap.latest_plan_id) if snap.latest_plan_id is not None else None
-                        ),
-                        label="Plan",
-                    ).classes("w-full cd-ops-plan-title")
+                    plan_select = (
+                        ui.select(
+                            options=select_options,
+                            value=(
+                                str(snap.latest_plan_id)
+                                if snap.latest_plan_id is not None
+                                else None
+                            ),
+                            label="Plan",
+                        )
+                        .classes("w-full cd-plan-select")
+                        .props("options-dense popup-content-class=cd-plan-select-popup")
+                    )
 
                     async def _on_plan_change(_e: Any = None) -> None:
                         raw = plan_select.value
@@ -111,6 +118,59 @@ def render_ops_focus_dashboard(
                 "Pokaż na mapie",
                 on_click=open_map,
             ).props("outline color=primary no-caps")
+
+        with ui.element("div").classes("cd-ops-in-transit w-full"):
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Trasy w drodze").classes("cd-wh-card-title")
+                info_hint(
+                    "Zatwierdzone trasy aktywnego planu, które jeszcze nie wróciły. "
+                    "Zrealizowane zwalnia auto i oznacza zlecenia jako dostarczone."
+                )
+            if snap.in_transit:
+                radio_options = {
+                    str(route.vehicle_id): (
+                        f"{route.vehicle_code} · {route.drop_summary or '—'} · "
+                        f"{route.order_count} zleceń"
+                    )
+                    for route in snap.in_transit
+                }
+                chosen = ui.radio(radio_options, value=None).classes("cd-in-transit-radio")
+
+                async def _confirm_complete() -> None:
+                    if on_complete_route is None or chosen.value is None:
+                        ui.notify("Zaznacz trasę do realizacji.", type="warning")
+                        return
+                    vehicle_id = int(chosen.value)
+                    route = next(
+                        (r for r in snap.in_transit if r.vehicle_id == vehicle_id),
+                        None,
+                    )
+                    if route is None:
+                        return
+                    with ui.dialog() as confirm, ui.card().classes("p-4 gap-3 w-[24rem]"):
+                        ui.label("Oznaczyć trasę jako zrealizowaną?").classes(
+                            "text-base font-medium"
+                        )
+                        ui.label(
+                            f"Pojazd {route.vehicle_code} · {route.order_count} zleceń."
+                        ).classes("text-sm text-gray-700")
+
+                        async def _yes() -> None:
+                            confirm.close()
+                            await on_complete_route(vehicle_id)
+
+                        with ui.row().classes("gap-2 justify-end w-full"):
+                            ui.button("Anuluj", on_click=confirm.close).props("outline")
+                            ui.button("Zrealizowane", on_click=_yes).props("color=positive")
+                    confirm.open()
+
+                ui.button(
+                    "Zrealizowane",
+                    icon="done",
+                    on_click=_confirm_complete,
+                ).props("color=positive no-caps")
+            else:
+                ui.label("Brak tras oczekujących na realizację.").classes("text-sm text-gray-500")
 
     ui.html(
         "<div class='cd-ops-kpis'>"

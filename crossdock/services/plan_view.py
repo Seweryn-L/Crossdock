@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -67,6 +68,18 @@ class PlanView:
     min_fill_ratio: float = 0.90
 
 
+@dataclass(frozen=True, slots=True)
+class InTransitRoute:
+    """Approved, not-yet-completed route of the active plan (warehouse / dashboard)."""
+
+    vehicle_id: int
+    vehicle_code: str
+    order_count: int
+    distance_km: float
+    route_status: str
+    drop_summary: str
+
+
 def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucket, str]:
     if sequence is not None and vehicle_code not in {"UNASSIGNED", "UNROUTED"}:
         return "riding", ""
@@ -114,6 +127,8 @@ def build_plan_view(
     attention: list[dict[str, object]] = []
     staying_ids: list[int] = []
     weight_by_vehicle: dict[str, float] = {}
+    orders_by_vehicle: dict[str, set[int]] = defaultdict(set)
+    drops_by_vehicle: dict[str, list[str]] = defaultdict(list)
 
     for item in items:
         bucket, reason = classify_item(vehicle_code=item.vehicle_code, sequence=item.sequence)
@@ -123,6 +138,9 @@ def build_plan_view(
             weight_by_vehicle[item.vehicle_code] = weight_by_vehicle.get(
                 item.vehicle_code, 0.0
             ) + float(item.weight_kg)
+            orders_by_vehicle[item.vehicle_code].add(item.order_id)
+            if item.drop_key:
+                drops_by_vehicle[item.vehicle_code].append(item.drop_key)
         elif bucket == "staying":
             staying.append(row)
             staying_ids.append(item.order_id)
@@ -141,6 +159,10 @@ def build_plan_view(
         below = bool(fill is not None and fill < min_fill)
         if below:
             below_count += 1
+        unique_drops = list(dict.fromkeys(drops_by_vehicle.get(route.vehicle_code, [])))
+        drop_summary = ", ".join(unique_drops[:3])
+        if len(unique_drops) > 3:
+            drop_summary = f"{drop_summary}…"
         route_rows.append(
             {
                 "vehicle_id": route.vehicle_id,
@@ -148,6 +170,8 @@ def build_plan_view(
                 "route_status": route.route_status,
                 "route_status_pl": _route_status_pl(route.route_status),
                 "drop_count": route.drop_count,
+                "order_count": len(orders_by_vehicle.get(route.vehicle_code, ())),
+                "drop_summary": drop_summary,
                 "distance_km": round(route.distance_km, 1),
                 "cost_eur": round(route.cost_eur, 2),
                 "weight_fill_pct": round(fill * 100) if fill is not None else None,
@@ -163,6 +187,8 @@ def build_plan_view(
                 "route_status": "proposed",
                 "route_status_pl": _route_status_pl("proposed"),
                 "drop_count": 0,
+                "order_count": len(orders_by_vehicle.get(code, ())),
+                "drop_summary": "",
                 "distance_km": 0.0,
                 "cost_eur": 0.0,
                 "weight_fill_pct": None,
@@ -214,3 +240,35 @@ def _resolve_run(repo: AssignmentRepository, run_id: int | None) -> AssignmentRu
         if run is not None:
             return run
     return repo.get_latest_run()
+
+
+def in_transit_route_from_row(row: dict[str, object]) -> InTransitRoute | None:
+    if row.get("route_status") != "approved":
+        return None
+    raw_id = row.get("vehicle_id")
+    if not isinstance(raw_id, int):
+        return None
+    raw_count = row.get("order_count")
+    order_count = raw_count if isinstance(raw_count, int) else 0
+    raw_km = row.get("distance_km")
+    distance_km = float(raw_km) if isinstance(raw_km, (int, float)) else 0.0
+    return InTransitRoute(
+        vehicle_id=raw_id,
+        vehicle_code=str(row.get("vehicle") or ""),
+        order_count=order_count,
+        distance_km=distance_km,
+        route_status="approved",
+        drop_summary=str(row.get("drop_summary") or ""),
+    )
+
+
+def list_in_transit_routes(
+    session: Session,
+    *,
+    run_id: int | None = None,
+) -> tuple[InTransitRoute, ...]:
+    """Approved routes of the active plan that have not been completed yet."""
+    view = build_plan_view(session, run_id=run_id)
+    return tuple(
+        route for row in view.routes if (route := in_transit_route_from_row(row)) is not None
+    )
