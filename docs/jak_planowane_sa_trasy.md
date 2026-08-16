@@ -69,7 +69,7 @@ Po spakowaniu trasa dostaje decyzję, **zanim** zatwierdzisz plan:
 | **Czeka na dopełnienie** | spakowana, ale poniżej progu i wszystkie zlecenia mają luz > 0 | zostaje `planned` w szkicu; **nie** wchodzi w „Zatwierdź pełne trasy” |
 | **Zostaje poza FTL** | `UNASSIGNED` — brak miejsca w flocie | `new`, wraca do puli |
 
-**Zatwierdź trasę** (pojedynczo) nadal może wysłać słabe auto ręcznie.
+**Zatwierdź zaznaczone** nadal może wysłać słabe auto ręcznie (także kilka tras naraz).
 
 Przy **Następny dzień** + **Generuj** niezatwierdzone 40% wraca do solvera razem z nowym importem. Jeśli doszło zlecenie na ten sam `drop_key`, wpadnie na tę samą naczepę (limit punktów + waga). Jeśli nie — albo dopełni się innym towarem, albo w dniu `must_leave_by` wyjedzie niepełne.
 

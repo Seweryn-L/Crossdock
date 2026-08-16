@@ -50,8 +50,9 @@ def test_polish_labels_are_intact() -> None:
     assert "Aktywny plan" in dashboard
     assert "Trasy w drodze" in dashboard
     assert "Zrealizowane" in pages
-    assert "Zatwierdź trasę" in pages
-    assert "Odblokuj trasę" in pages
+    assert "Zatwierdź zaznaczone" in pages
+    assert "Odblokuj zaznaczone" in pages
+    assert "Zatwierdź trasę" not in pages
     assert '"headerName": "Wysłać do"' in pages
     assert '"headerName": "Termin dostawy"' in pages
     plan_view = ROOT / "crossdock" / "services" / "plan_view.py"

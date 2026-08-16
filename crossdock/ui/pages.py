@@ -193,20 +193,46 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
         }
 
 
-def _approve_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
+def _approve_routes_job(
+    run_id: int, vehicle_ids: list[int], username: str
+) -> tuple[int, int, list[str], list[str]]:
+    ok: list[str] = []
+    errors: list[str] = []
+    n_orders = 0
     with session_scope() as session:
-        outcome = PlanningService(session).approve_route(
-            run_id=run_id, vehicle_id=vehicle_id, username=username
-        )
-        return outcome.run_id, len(outcome.approved_order_ids), outcome.vehicle_code or "?"
+        service = PlanningService(session)
+        for vehicle_id in vehicle_ids:
+            try:
+                outcome = service.approve_route(
+                    run_id=run_id, vehicle_id=vehicle_id, username=username
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            ok.append(outcome.vehicle_code or "?")
+            n_orders += len(outcome.approved_order_ids)
+    return run_id, n_orders, ok, errors
 
 
-def _unlock_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
+def _unlock_routes_job(
+    run_id: int, vehicle_ids: list[int], username: str
+) -> tuple[int, int, list[str], list[str]]:
+    ok: list[str] = []
+    errors: list[str] = []
+    n_orders = 0
     with session_scope() as session:
-        outcome = PlanningService(session).unlock_route(
-            run_id=run_id, vehicle_id=vehicle_id, username=username
-        )
-        return outcome.run_id, len(outcome.reset_order_ids), outcome.vehicle_code or "?"
+        service = PlanningService(session)
+        for vehicle_id in vehicle_ids:
+            try:
+                outcome = service.unlock_route(
+                    run_id=run_id, vehicle_id=vehicle_id, username=username
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            ok.append(outcome.vehicle_code or "?")
+            n_orders += len(outcome.reset_order_ids)
+    return run_id, n_orders, ok, errors
 
 
 def _complete_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, int, str]:
@@ -215,6 +241,27 @@ def _complete_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[in
             run_id=run_id, vehicle_id=vehicle_id, username=username
         )
         return outcome.run_id, len(outcome.delivered_order_ids), outcome.vehicle_code or "?"
+
+
+def _complete_routes_job(
+    run_id: int, vehicle_ids: list[int], username: str
+) -> tuple[int, int, list[str], list[str]]:
+    ok: list[str] = []
+    errors: list[str] = []
+    n_orders = 0
+    with session_scope() as session:
+        service = PlanningService(session)
+        for vehicle_id in vehicle_ids:
+            try:
+                outcome = service.complete_route(
+                    run_id=run_id, vehicle_id=vehicle_id, username=username
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            ok.append(outcome.vehicle_code or "?")
+            n_orders += len(outcome.delivered_order_ids)
+    return run_id, n_orders, ok, errors
 
 
 def _import_upload(path: Path, username: str) -> ImportOutcome:
@@ -757,11 +804,13 @@ async def plans_page() -> None:
                 approve_btn = ui.button("Zatwierdź pełne trasy", icon="done_all").props(
                     "color=positive"
                 )
-                approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
+                approve_route_btn = ui.button("Zatwierdź zaznaczone", icon="check_circle").props(
                     "color=positive outline"
                 )
                 complete_route_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
-                unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
+                unlock_route_btn = ui.button("Odblokuj zaznaczone", icon="lock_open").props(
+                    "outline"
+                )
                 unlock_btn = ui.button("Odblokuj cały plan", icon="restart_alt").props("outline")
                 enlarge_approve_btn: ui.button | None = None
                 enlarge_approve_route_btn: ui.button | None = None
@@ -862,7 +911,7 @@ async def plans_page() -> None:
                             ui.aggrid(
                                 {
                                     "columnDefs": [
-                                        selection_column(multiple=False),
+                                        selection_column(multiple=True),
                                         {
                                             "headerName": "ID poj.",
                                             "field": "vehicle_id",
@@ -919,7 +968,7 @@ async def plans_page() -> None:
                                         },
                                     ],
                                     "rowData": [],
-                                    "rowSelection": "single",
+                                    "rowSelection": "multiple",
                                     "suppressRowClickSelection": True,
                                     "defaultColDef": {"sortable": True, "resizable": True},
                                     "domLayout": "normal",
@@ -1357,32 +1406,66 @@ async def plans_page() -> None:
                 type="positive" if unassigned == 0 and unrouted == 0 else "warning",
             )
 
-        async def _selected_route_vehicle_id() -> int | None:
+        async def _selected_route_vehicle_ids() -> list[int]:
             rows = await routes_grid.get_selected_rows()
-            if not rows:
-                return None
-            vid = rows[0].get("vehicle_id")
-            return int(vid) if vid is not None else None
+            ids: list[int] = []
+            seen: set[int] = set()
+            for row in rows:
+                vid = row.get("vehicle_id")
+                if vid is None:
+                    continue
+                n = int(vid)
+                if n in seen:
+                    continue
+                seen.add(n)
+                ids.append(n)
+            return ids
+
+        def _notify_route_batch(
+            *,
+            done: str,
+            rid: int,
+            n_orders: int,
+            ok: list[str],
+            errors: list[str],
+        ) -> None:
+            if ok:
+                if len(ok) == 1:
+                    ui.notify(
+                        f"{done} trasę {ok[0]} (plan #{rid}, {n_orders} zleceń).",
+                        type="positive",
+                    )
+                else:
+                    listed = ", ".join(ok[:8])
+                    extra = "…" if len(ok) > 8 else ""
+                    ui.notify(
+                        f"{done} {len(ok)} trasy (plan #{rid}, {n_orders} zleceń): "
+                        f"{listed}{extra}.",
+                        type="positive",
+                    )
+            for err in errors[:8]:
+                ui.notify(err, type="warning" if ok else "negative")
+            if not ok and not errors:
+                ui.notify("Nic nie zmieniono.", type="warning")
 
         async def on_approve_route() -> None:
             run_id = ctx.get("latest_run_id")
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną trasę w tabeli.", type="warning")
                 return
             try:
-                rid, n_orders, code = await run.io_bound(
-                    _approve_route_job, int(run_id), vehicle_id, username
+                rid, n_orders, ok, errors = await run.io_bound(
+                    _approve_routes_job, int(run_id), vehicle_ids, username
                 )
             except Exception as exc:
-                ui.notify(f"Nie udało się zatwierdzić trasy: {exc}", type="negative")
+                ui.notify(f"Nie udało się zatwierdzić tras: {exc}", type="negative")
                 return
-            ui.notify(
-                f"Zatwierdzono trasę {code} (plan #{rid}, {n_orders} zlecen).",
-                type="positive",
+            _notify_route_batch(
+                done="Zatwierdzono", rid=rid, n_orders=n_orders, ok=ok, errors=errors
             )
             await refresh_plan_view()
 
@@ -1391,20 +1474,19 @@ async def plans_page() -> None:
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną trasę w tabeli.", type="warning")
                 return
             try:
-                rid, n_orders, code = await run.io_bound(
-                    _unlock_route_job, int(run_id), vehicle_id, username
+                rid, n_orders, ok, errors = await run.io_bound(
+                    _unlock_routes_job, int(run_id), vehicle_ids, username
                 )
             except Exception as exc:
-                ui.notify(f"Nie udało się odblokować trasy: {exc}", type="negative")
+                ui.notify(f"Nie udało się odblokować tras: {exc}", type="negative")
                 return
-            ui.notify(
-                f"Odblokowano trasę {code} (plan #{rid}, {n_orders} zleceń wróciło do puli).",
-                type="info",
+            _notify_route_batch(
+                done="Odblokowano", rid=rid, n_orders=n_orders, ok=ok, errors=errors
             )
             await refresh_plan_view()
 
@@ -1413,20 +1495,19 @@ async def plans_page() -> None:
             if run_id is None:
                 ui.notify("Brak planu.", type="warning")
                 return
-            vehicle_id = await _selected_route_vehicle_id()
-            if vehicle_id is None:
-                ui.notify("Zaznacz zatwierdzoną trasę w tabeli.", type="warning")
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną zatwierdzoną trasę.", type="warning")
                 return
             try:
-                rid, n_orders, code = await run.io_bound(
-                    _complete_route_job, int(run_id), vehicle_id, username
+                rid, n_orders, ok, errors = await run.io_bound(
+                    _complete_routes_job, int(run_id), vehicle_ids, username
                 )
             except Exception as exc:
-                ui.notify(f"Nie udało się oznaczyć trasy: {exc}", type="negative")
+                ui.notify(f"Nie udało się oznaczyć tras: {exc}", type="negative")
                 return
-            ui.notify(
-                f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
-                type="positive",
+            _notify_route_batch(
+                done="Zrealizowano", rid=rid, n_orders=n_orders, ok=ok, errors=errors
             )
             await refresh_plan_view()
 
@@ -1593,13 +1674,13 @@ async def plans_page() -> None:
             enlarge_approve_btn = ui.button("Zatwierdź pełne trasy", icon="done_all").props(
                 "color=positive"
             )
-            enlarge_approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
-                "color=positive outline"
-            )
+            enlarge_approve_route_btn = ui.button(
+                "Zatwierdź zaznaczone", icon="check_circle"
+            ).props("color=positive outline")
             enlarge_complete_route_btn = ui.button("Zrealizowane", icon="done").props(
                 "color=positive"
             )
-            enlarge_unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props(
+            enlarge_unlock_route_btn = ui.button("Odblokuj zaznaczone", icon="lock_open").props(
                 "outline"
             )
             enlarge_approve_btn.on_click(on_approve)

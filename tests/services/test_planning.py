@@ -30,13 +30,13 @@ def _settings() -> Settings:
     )
 
 
-def _add_vehicle(session: Session, code: str = "T1") -> None:
+def _add_vehicle(session: Session, code: str = "T1", *, weight: float = 12000) -> None:
     VehicleRepository(session).add(
         Vehicle(
             code=code,
             vehicle_type=VehicleType.TRUCK,
             pallet_capacity=20,
-            weight_capacity_kg=12000,
+            weight_capacity_kg=weight,
             is_placeholder=False,
         )
     )
@@ -311,6 +311,24 @@ def test_approve_route_marks_vehicle_busy_and_unlocks(db_session: Session) -> No
     assert vehicle is not None
     assert vehicle.is_busy is False
     assert VehicleRepository(db_session).list_available()
+
+
+def test_approve_two_routes_one_after_another(db_session: Session) -> None:
+    _add_vehicle(db_session, "T1", weight=2500)
+    _add_vehicle(db_session, "T2", weight=2500)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    routes = AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    ids = [r.vehicle_id for r in routes if r.vehicle_id is not None]
+    assert len(ids) == 2
+    for vid in ids:
+        service.approve_route(run_id=plan.run_id, vehicle_id=vid, username="approver")
+    statuses = {
+        r.route_status for r in AssignmentRepository(db_session).list_routes_for_run(plan.run_id)
+    }
+    assert statuses == {"approved"}
 
 
 def test_rename_and_list_recent_plans(db_session: Session) -> None:
