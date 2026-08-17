@@ -466,7 +466,7 @@ async def orders_page() -> None:
                 delete_all_btn = ui.button("Usuń wszystkie", icon="delete_sweep").props(
                     "outline color=negative"
                 )
-                pallets_btn = ui.button("Zmień palety", icon="pallet").props("outline")
+                pallets_btn = ui.button("Zmień palety", icon="pallet").props("outline").classes("hidden")
                 pallets_btn.disable()
                 info_hint(
                     "Gdy baza jest pusta, zaimportuj plik Excel, aby rozpocząć planowanie. "
@@ -1901,8 +1901,8 @@ async def warehouse_page() -> None:
     with page_frame("Magazyn"):
         ops_page_header(
             "Magazyn",
-            "Stan zapełnienia, odliczanie do wyjazdu, kolejka priorytetowa i bufor. "
-            "Ręczny priorytet (pozycja 1) jedzie pierwszy przy generowaniu planu.",
+            "Stan zapełnienia, odliczanie do wyjazdu i bufor. "
+            "Zlecenia trafiają od razu do dalszej obsługi według planu i priorytetów biznesowych.",
         )
 
         with ui.element("div").classes("cd-wh-card w-full"):
@@ -1966,73 +1966,74 @@ async def warehouse_page() -> None:
                     "text-sm text-gray-500"
                 )
 
-        with ui.element("div").classes("cd-wh-card w-full"):
-            with ui.row().classes("w-full items-center justify-between"):
-                with ui.row().classes("items-center gap-1"):
-                    ui.label("Kolejka wydań").classes("cd-wh-card-title")
-                    info_hint("Priorytet góra/dół i wstrzymanie — całe zlecenia (FR-019).")
-                enlarge_queue_btn = ui.button("Powiększ", icon="open_in_full").props(
-                    "flat dense no-caps"
-                )
-            queue_host = ui.element("div").classes("cd-grid-host")
-            with queue_host:
-                grid = (
-                    ui.aggrid(
-                        {
-                            "columnDefs": [
-                                selection_column(multiple=False),
-                                {"headerName": "Poz.", "field": "position", "width": 70},
-                                {"headerName": "Kod", "field": "delivery_code", "filter": True},
-                                {"headerName": "Miasto", "field": "city"},
-                                {"headerName": "Waga [kg]", "field": "weight_kg"},
-                                {"headerName": "Termin", "field": "delivery_date"},
-                                {"headerName": "Wyjechać do", "field": "must_leave_on"},
-                                {
-                                    "headerName": "Luz [dni]",
-                                    "field": "slack_days",
-                                    "sortable": True,
-                                },
-                                {"headerName": "Status", "field": "status"},
-                                {"headerName": "ID", "field": "order_id", "width": 80},
-                            ],
-                            "rowData": [],
-                            "rowSelection": "single",
-                            "suppressRowClickSelection": True,
-                            "domLayout": "normal",
-                        }
+        with ui.element("div").classes("hidden"):
+            with ui.element("div").classes("cd-wh-card w-full"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Kolejka wydań").classes("cd-wh-card-title")
+                        info_hint("Priorytet góra/dół i wstrzymanie — całe zlecenia (FR-019).")
+                    enlarge_queue_btn = ui.button("Powiększ", icon="open_in_full").props(
+                        "flat dense no-caps"
                     )
-                    .classes("w-full")
-                    .style("height: 240px")
+                queue_host = ui.element("div").classes("cd-grid-host")
+                with queue_host:
+                    grid = (
+                        ui.aggrid(
+                            {
+                                "columnDefs": [
+                                    selection_column(multiple=False),
+                                    {"headerName": "Poz.", "field": "position", "width": 70},
+                                    {"headerName": "Kod", "field": "delivery_code", "filter": True},
+                                    {"headerName": "Miasto", "field": "city"},
+                                    {"headerName": "Waga [kg]", "field": "weight_kg"},
+                                    {"headerName": "Termin", "field": "delivery_date"},
+                                    {"headerName": "Wyjechać do", "field": "must_leave_on"},
+                                    {
+                                        "headerName": "Luz [dni]",
+                                        "field": "slack_days",
+                                        "sortable": True,
+                                    },
+                                    {"headerName": "Status", "field": "status"},
+                                    {"headerName": "ID", "field": "order_id", "width": 80},
+                                ],
+                                "rowData": [],
+                                "rowSelection": "single",
+                                "suppressRowClickSelection": True,
+                                "domLayout": "normal",
+                            }
+                        )
+                        .classes("w-full")
+                        .style("height: 240px")
+                    )
+                enlarge_queue_btn.on_click(
+                    attach_grid_enlarge(
+                        grid,
+                        queue_host,
+                        title="Kolejka wydań",
+                        compact_height="240px",
+                    )
                 )
-            enlarge_queue_btn.on_click(
-                attach_grid_enlarge(
-                    grid,
-                    queue_host,
-                    title="Kolejka wydań",
-                    compact_height="240px",
-                )
-            )
-            queue_empty = ui.label(
-                "Brak pozycji — dodaj zlecenie z listy powyżej lub z Planów."
-            ).classes("text-sm text-gray-500")
-            with ui.row().classes("cd-toolbar"):
-                ui.button(
-                    "W górę",
-                    icon="arrow_upward",
-                    on_click=lambda: _move("up"),
-                ).props("outline")
-                ui.button(
-                    "W dół",
-                    icon="arrow_downward",
-                    on_click=lambda: _move("down"),
-                ).props("outline")
-                ui.button("Wstrzymaj", on_click=lambda: _hold(True)).props("outline")
-                ui.button("Wznów", on_click=lambda: _hold(False)).props("outline")
-                ui.button(
-                    "Usuń z kolejki",
-                    on_click=lambda: _remove(),
-                ).props("outline color=negative")
-                ui.button("Odśwież", on_click=lambda: refresh_all()).props("flat")
+                queue_empty = ui.label(
+                    "Brak pozycji — dodaj zlecenie z listy powyżej lub z Planów."
+                ).classes("text-sm text-gray-500")
+                with ui.row().classes("cd-toolbar"):
+                    ui.button(
+                        "W górę",
+                        icon="arrow_upward",
+                        on_click=lambda: _move("up"),
+                    ).props("outline")
+                    ui.button(
+                        "W dół",
+                        icon="arrow_downward",
+                        on_click=lambda: _move("down"),
+                    ).props("outline")
+                    ui.button("Wstrzymaj", on_click=lambda: _hold(True)).props("outline")
+                    ui.button("Wznów", on_click=lambda: _hold(False)).props("outline")
+                    ui.button(
+                        "Usuń z kolejki",
+                        on_click=lambda: _remove(),
+                    ).props("outline color=negative")
+                    ui.button("Odśwież", on_click=lambda: refresh_all()).props("flat")
 
         with ui.element("div").classes("cd-wh-card w-full"):
             with ui.row().classes("w-full items-center justify-between"):
