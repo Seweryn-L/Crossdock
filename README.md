@@ -16,6 +16,8 @@ planowanie transportów FTL (OR-Tools), wizualizacja tras na mapie, raporty efek
 | [docs/walkthrough_t2.md](docs/walkthrough_t2.md) | Postęp T2: co działa, jak przetestować |
 | [docs/walkthrough_t3.md](docs/walkthrough_t3.md) | Postęp T3: przydział CP-SAT |
 | [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania funkcjonalne (FR) i niefunkcjonalne (NFR) |
+| [docs/prompt_briefing_spotkanie_firma.md](docs/prompt_briefing_spotkanie_firma.md) | Poprawiony prompt do przygotowania briefingu przed spotkaniem z firmą |
+| [docs/briefing_przed_spotkaniem_firma.md](docs/briefing_przed_spotkaniem_firma.md) | Gotowa notatka na spotkanie: pokaz, ustawienia, pytania |
 | [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Karta projektu: infrastruktura, zespół, fazy wdrożenia |
 | [AGENTS.md](AGENTS.md) | Reguły dla agentów AI piszących kod w tym repozytorium |
 
