@@ -183,5 +183,6 @@ def test_overflow_capacity_flips_hold_to_send(db_session: Session) -> None:
     PlanningService(db_session, settings=settings).run_plan(username="tester")
     view = build_plan_view(db_session, settings=settings)
     assert view.routes[0]["disposition"] == "send"
-    assert view.routes[0]["sla_label"] == "Wypychane z magazynu"
+    assert view.routes[0]["sla_label"] == "Sugestia wysłania - brak miejsca w magazynie"
+    assert view.routes[0]["deadline_label"]
     assert view.holding_order_ids == ()

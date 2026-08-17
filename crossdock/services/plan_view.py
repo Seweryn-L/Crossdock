@@ -10,7 +10,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
-from crossdock.domain.sla import route_should_send, slack_days
+from crossdock.domain.sla import must_leave_by, route_should_send, slack_days
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 from crossdock.storage.tables import AssignmentItemRow, AssignmentRunRow
 from crossdock.text_pl import format_plan_label
@@ -143,12 +143,14 @@ def build_plan_view(
     orders_by_vehicle: dict[str, set[int]] = defaultdict(set)
     drops_by_vehicle: dict[str, list[str]] = defaultdict(list)
     slack_by_order: dict[int, int] = {}
+    deadline_by_order: dict[int, date] = {}
     slack_by_vehicle: dict[str, list[int]] = defaultdict(list)
 
     for item in items:
         order = order_repo.get_by_id(item.order_id)
         if order is not None:
             slack_by_order[item.order_id] = slack_days(order.delivery_date, planning, lead)
+            deadline_by_order[item.order_id] = must_leave_by(order.delivery_date, lead)
         bucket, reason = classify_item(vehicle_code=item.vehicle_code, sequence=item.sequence)
         row = _item_to_row(item, reason, slack=slack_by_order.get(item.order_id))
         if bucket == "riding":
@@ -185,9 +187,11 @@ def build_plan_view(
         drop_summary = ", ".join(unique_drops[:3])
         if len(unique_drops) > 3:
             drop_summary = f"{drop_summary}…"
+        route_order_ids = list(orders_by_vehicle.get(route.vehicle_code, ()))
+        deadline = min((deadline_by_order.get(oid) for oid in route_order_ids if oid in deadline_by_order), default=None)
         min_slack = min(slacks) if slacks else None
         if send and min_slack is not None and min_slack <= 0:
-            sla_label = "Ostatni dzień wyjazdu" if min_slack == 0 else "Spóźnione"
+            sla_label = "Ostatni dzień na wysłanie - ryzyko opóźnienia" if min_slack == 0 else "Spóźnione"
         elif send:
             sla_label = "Wyślij"
         else:
@@ -199,7 +203,7 @@ def build_plan_view(
                 "route_status": route.route_status,
                 "route_status_pl": _route_status_pl(route.route_status),
                 "drop_count": route.drop_count,
-                "order_count": len(orders_by_vehicle.get(route.vehicle_code, ())),
+                "order_count": len(route_order_ids),
                 "drop_summary": drop_summary,
                 "distance_km": round(route.distance_km, 1),
                 "cost_eur": round(route.cost_eur, 2),
@@ -207,6 +211,8 @@ def build_plan_view(
                 "below_min_fill": below,
                 "disposition": "send" if send else "hold",
                 "sla_label": sla_label,
+                "deadline_date": deadline.isoformat() if deadline is not None else None,
+                "deadline_label": deadline.strftime("%d.%m.%Y") if deadline is not None else "—",
                 "min_slack": min_slack,
             }
         )
@@ -248,7 +254,7 @@ def build_plan_view(
                 if remaining <= capacity_kg:
                     break
                 row["disposition"] = "send"
-                row["sla_label"] = "Wypychane z magazynu"
+                row["sla_label"] = "Sugestia wysłania - brak miejsca w magazynie"
                 remaining -= weight_by_vehicle.get(str(row["vehicle"]), 0.0)
 
     hold_codes = {str(r["vehicle"]) for r in route_rows if r.get("disposition") == "hold"}
