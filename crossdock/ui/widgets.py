@@ -47,6 +47,7 @@ def attach_grid_enlarge(
     *,
     title: str,
     compact_height: str,
+    toolbar_builder: Callable[[], None] | None = None,
 ) -> Callable[[], None]:
     """Move the same grid into a centered overlay; restore on close / Escape."""
     dialog = ui.dialog().classes("cd-enlarge-dialog")
@@ -54,7 +55,12 @@ def attach_grid_enlarge(
         with ui.row().classes("cd-enlarge-head w-full items-center justify-between"):
             ui.label(title).classes("cd-enlarge-title")
             ui.button("Zamknij", icon="close", on_click=dialog.close).props("flat no-caps")
+        if toolbar_builder is not None:
+            with ui.row().classes("cd-toolbar w-full"):
+                toolbar_builder()
         enlarge_host = ui.element("div").classes("cd-enlarge-host")
+
+    enlarge_height = "calc(85vh - 7.5rem)" if toolbar_builder is not None else "calc(85vh - 4.5rem)"
 
     def restore() -> None:
         parent = grid.parent_slot.parent if grid.parent_slot is not None else None
@@ -64,7 +70,7 @@ def attach_grid_enlarge(
 
     def open_enlarge() -> None:
         grid.move(enlarge_host)
-        grid.style("height: calc(85vh - 4.5rem); width: 100%")
+        grid.style(f"height: {enlarge_height}; width: 100%")
         dialog.open()
 
     dialog.on("hide", lambda *_args: restore())

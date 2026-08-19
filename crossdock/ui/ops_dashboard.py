@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import html
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from nicegui import ui
 
 from crossdock.services.dashboard import DashboardSnapshot
+from crossdock.text_pl import route_status_pl
 from crossdock.ui.layout import ops_page_header
-from crossdock.ui.widgets import info_hint
+from crossdock.ui.widgets import attach_grid_enlarge, info_hint, selection_column
 
 
 def _status_tile(label: str, value: int, hint: str, extra_class: str = "") -> None:
@@ -27,7 +28,7 @@ def render_ops_focus_dashboard(
     on_enqueue_staying: Callable[[], Awaitable[Any] | Any],
     open_map: Callable[[], None],
     on_select_plan: Callable[[int], Awaitable[Any] | Any] | None = None,
-    on_complete_route: Callable[[int], Awaitable[Any] | Any] | None = None,
+    on_complete_routes: Callable[[Sequence[int]], Awaitable[Any] | Any] | None = None,
 ) -> None:
     """Paint the Ops Focus home layout inside an already-open page_frame."""
     plan_title = snap.plan_label or "Brak planu"
@@ -120,56 +121,95 @@ def render_ops_focus_dashboard(
             ).props("outline color=primary no-caps")
 
         with ui.element("div").classes("cd-ops-in-transit w-full"):
-            with ui.row().classes("items-center gap-1"):
-                ui.label("Trasy w drodze").classes("cd-wh-card-title")
-                info_hint(
-                    "Zatwierdzone trasy aktywnego planu, które jeszcze nie wróciły. "
-                    "Zrealizowane zwalnia auto i oznacza zlecenia jako dostarczone."
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("Trasy w drodze").classes("cd-wh-card-title")
+                    info_hint(
+                        "Zatwierdzone trasy aktywnego planu, które jeszcze nie wróciły. "
+                        "Zrealizowane zwalnia auto i oznacza zlecenia jako dostarczone."
+                    )
+                enlarge_transit_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
                 )
             if snap.in_transit:
-                radio_options = {
-                    str(route.vehicle_id): (
-                        f"{route.vehicle_code} · {route.drop_summary or '—'} · "
-                        f"{route.order_count} zleceń"
-                    )
-                    for route in snap.in_transit
-                }
-                chosen = ui.radio(radio_options, value=None).classes("cd-in-transit-radio")
-
-                async def _confirm_complete() -> None:
-                    if on_complete_route is None or chosen.value is None:
-                        ui.notify("Zaznacz trasę do realizacji.", type="warning")
-                        return
-                    vehicle_id = int(chosen.value)
-                    route = next(
-                        (r for r in snap.in_transit if r.vehicle_id == vehicle_id),
-                        None,
-                    )
-                    if route is None:
-                        return
-                    with ui.dialog() as confirm, ui.card().classes("p-4 gap-3 w-[24rem]"):
-                        ui.label("Oznaczyć trasę jako zrealizowaną?").classes(
-                            "text-base font-medium"
+                transit_host = ui.element("div").classes("cd-grid-host")
+                with transit_host:
+                    transit_grid = (
+                        ui.aggrid(
+                            {
+                                "columnDefs": [
+                                    selection_column(multiple=True),
+                                    {
+                                        "headerName": "Pojazd",
+                                        "field": "vehicle",
+                                        "filter": True,
+                                    },
+                                    {
+                                        "headerName": "Rozładunki",
+                                        "field": "drop_summary",
+                                        "flex": 1,
+                                    },
+                                    {
+                                        "headerName": "Zlecenia",
+                                        "field": "order_count",
+                                        "width": 110,
+                                    },
+                                    {"headerName": "Km", "field": "distance_km", "width": 90},
+                                    {"headerName": "Status", "field": "route_status_pl"},
+                                ],
+                                "rowData": [
+                                    {
+                                        "vehicle_id": r.vehicle_id,
+                                        "vehicle": r.vehicle_code,
+                                        "drop_summary": r.drop_summary or "—",
+                                        "order_count": r.order_count,
+                                        "distance_km": r.distance_km,
+                                        "route_status_pl": route_status_pl(r.route_status),
+                                    }
+                                    for r in snap.in_transit
+                                ],
+                                "rowSelection": "multiple",
+                                "suppressRowClickSelection": True,
+                                "domLayout": "normal",
+                            }
                         )
-                        ui.label(
-                            f"Pojazd {route.vehicle_code} · {route.order_count} zleceń."
-                        ).classes("text-sm text-gray-700")
+                        .classes("w-full")
+                        .style("height: 180px")
+                    )
 
-                        async def _yes() -> None:
-                            confirm.close()
-                            await on_complete_route(vehicle_id)
+                async def _complete_selected() -> None:
+                    if on_complete_routes is None:
+                        return
+                    rows = await transit_grid.get_selected_rows()
+                    if not rows:
+                        ui.notify("Zaznacz co najmniej jedną trasę w drodze.", type="warning")
+                        return
+                    vehicle_ids = [int(r["vehicle_id"]) for r in rows if r.get("vehicle_id")]
+                    if not vehicle_ids:
+                        ui.notify("Brak pojazdów na zaznaczonych trasach.", type="warning")
+                        return
+                    await on_complete_routes(vehicle_ids)
 
-                        with ui.row().classes("gap-2 justify-end w-full"):
-                            ui.button("Anuluj", on_click=confirm.close).props("outline")
-                            ui.button("Zrealizowane", on_click=_yes).props("color=positive")
-                    confirm.open()
-
-                ui.button(
-                    "Zrealizowane",
-                    icon="done",
-                    on_click=_confirm_complete,
-                ).props("color=positive no-caps")
+                with ui.row().classes("cd-toolbar"):
+                    complete_transit_btn = ui.button("Zrealizowane", icon="done").props(
+                        "color=positive no-caps"
+                    )
+                complete_transit_btn.on_click(_complete_selected)
+                enlarge_transit_btn.on_click(
+                    attach_grid_enlarge(
+                        transit_grid,
+                        transit_host,
+                        title="Trasy w drodze",
+                        compact_height="180px",
+                        toolbar_builder=lambda: ui.button(
+                            "Zrealizowane",
+                            icon="done",
+                            on_click=_complete_selected,
+                        ).props("color=positive"),
+                    )
+                )
             else:
+                enlarge_transit_btn.set_visibility(False)
                 ui.label("Brak tras oczekujących na realizację.").classes("text-sm text-gray-500")
 
     ui.html(

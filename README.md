@@ -17,6 +17,7 @@ planowanie transportów FTL (OR-Tools), wizualizacja tras na mapie, raporty efek
 | [docs/walkthrough_t3.md](docs/walkthrough_t3.md) | Postęp T3: przydział CP-SAT |
 | [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania funkcjonalne (FR) i niefunkcjonalne (NFR) |
 | [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Karta projektu: infrastruktura, zespół, fazy wdrożenia |
+| [docs/hosting_demo.md](docs/hosting_demo.md) | Tymczasowy deployment demo na Oracle VM przez Docker Compose |
 | [AGENTS.md](AGENTS.md) | Reguły dla agentów AI piszących kod w tym repozytorium |
 
 ## Struktura

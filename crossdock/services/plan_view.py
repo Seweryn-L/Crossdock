@@ -188,10 +188,18 @@ def build_plan_view(
         if len(unique_drops) > 3:
             drop_summary = f"{drop_summary}…"
         route_order_ids = list(orders_by_vehicle.get(route.vehicle_code, ()))
-        deadline = min((deadline_by_order.get(oid) for oid in route_order_ids if oid in deadline_by_order), default=None)
+        route_deadlines = [
+            deadline
+            for oid in route_order_ids
+            if (deadline := deadline_by_order.get(oid)) is not None
+        ]
+        deadline = min(route_deadlines) if route_deadlines else None
         min_slack = min(slacks) if slacks else None
         if send and min_slack is not None and min_slack <= 0:
-            sla_label = "Ostatni dzień na wysłanie - ryzyko opóźnienia" if min_slack == 0 else "Spóźnione"
+            if min_slack == 0:
+                sla_label = "Ostatni dzień na wysłanie - ryzyko opóźnienia"
+            else:
+                sla_label = "Spóźnione"
         elif send:
             sla_label = "Wyślij"
         else:

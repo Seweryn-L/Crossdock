@@ -130,10 +130,17 @@ def test_dark_html_rewrite_sets_quasar_flags() -> None:
 
 def test_orders_hides_tutorial_copy() -> None:
     pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
+    ops_dashboard = (UI_DIR / "ops_dashboard.py").read_text(encoding="utf-8")
     assert "hint_label" not in pages
     assert 'ui.label(\n                "Format: raport e2open' not in pages
-    enlarge_calls = pages.count("attach_grid_enlarge(") + pages.count("enlarge_grid_button(")
-    assert pages.count("ui.aggrid(") == enlarge_calls
+    aggrid_calls = pages.count("ui.aggrid(") + ops_dashboard.count("ui.aggrid(")
+    enlarge_calls = (
+        pages.count("attach_grid_enlarge(")
+        + pages.count("enlarge_grid_button(")
+        + ops_dashboard.count("attach_grid_enlarge(")
+        + pages.count("def open_route_enlarge(")
+    )
+    assert aggrid_calls == enlarge_calls
 
 
 def test_plan_generation_keeps_sqlite_off_cpu_bound() -> None:
