@@ -32,6 +32,7 @@ def _settings(**kwargs: object) -> Settings:
         planning_date=date(2026, 7, 30),
         ship_lead_days=2,
         warehouse_capacity_kg=1_000_000.0,
+        use_osrm=False,
     )
     base.update(kwargs)
     return Settings(**base)  # type: ignore[arg-type]

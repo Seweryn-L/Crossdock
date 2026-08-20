@@ -848,6 +848,61 @@ body, .nicegui-content, .q-page, .q-layout {
   width: 100% !important;
 }
 .cd-grid-host { width: 100% !important; }
+.cd-map-legend {
+  min-width: 220px !important;
+  max-width: 280px !important;
+  flex: 0 0 auto !important;
+  padding: 0.75rem 1rem !important;
+  max-height: 70vh !important;
+  overflow-y: auto !important;
+}
+.cd-map-legend-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.35rem !important;
+  width: 100% !important;
+  cursor: pointer !important;
+  border-radius: 4px !important;
+  padding: 0.15rem 0.25rem !important;
+}
+.cd-map-legend-row:hover {
+  background: color-mix(in srgb, var(--cd-heading) 8%, transparent) !important;
+}
+.cd-map-legend-row.cd-map-legend-active {
+  background: color-mix(in srgb, var(--cd-heading) 14%, transparent) !important;
+}
+.cd-map-legend-swatch {
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 2px !important;
+  flex: 0 0 auto !important;
+}
+.cd-map-legend-label {
+  font-size: 0.8125rem !important;
+  color: var(--cd-body) !important;
+  line-height: 1.25 !important;
+  flex: 1 1 auto !important;
+}
+.cd-map-host {
+  flex: 1 1 auto !important;
+  min-width: 320px !important;
+  width: 100% !important;
+}
+.cd-map-seq-badge {
+  background: var(--badge-bg, #377eb8) !important;
+  color: #fff !important;
+  border: 2px solid #fff !important;
+  border-radius: 50% !important;
+  width: 22px !important;
+  height: 22px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.35) !important;
+  font-family: var(--cd-font) !important;
+}
 .cd-plan-meta {
   display: flex !important;
   flex-wrap: wrap !important;

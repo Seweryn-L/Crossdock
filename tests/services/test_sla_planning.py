@@ -31,6 +31,7 @@ def _settings(**kwargs: object) -> Settings:
         ship_lead_days=2,
         min_fill_ratio=0.90,
         warehouse_capacity_kg=1_000_000.0,
+        use_osrm=False,
     )
     base.update(kwargs)
     return Settings(**base)  # type: ignore[arg-type]

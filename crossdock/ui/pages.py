@@ -32,8 +32,8 @@ from crossdock.services.locations import (
     seed_location_coords,
     upsert_location,
 )
-from crossdock.services.map_arrows import segment_arrows
-from crossdock.services.map_view import MapPlanView, MapViewService
+from crossdock.services.map_arrows import leg_arrows
+from crossdock.services.map_view import MapPlanView, MapViewService, VehicleMapRoute
 from crossdock.services.orders import (
     OrderCounts,
     delete_all_orders,
@@ -88,7 +88,9 @@ from crossdock.ui.labels import (
     route_status_pl,
 )
 from crossdock.ui.layout import ops_page_header, page_frame
+from crossdock.ui.map_leaflet_js import CD_MAP_JS
 from crossdock.ui.widgets import (
+    attach_element_enlarge,
     attach_grid_enlarge,
     enlarge_grid_button,
     info_hint,
@@ -1768,27 +1770,199 @@ def _load_map_view(run_id: int | None, require_exact: bool = False) -> MapPlanVi
         return service.build_for_run(resolved)
 
 
+def _load_map_page_bundle(
+    run_id: int | None, require_exact: bool = False
+) -> tuple[dict[str, str], MapPlanView | None]:
+    with session_scope() as session:
+        repo = AssignmentRepository(session)
+        options = {
+            str(row.id): format_plan_label(
+                run_id=row.id,
+                display_name=row.display_name,
+                plan_status=row.plan_status,
+                created_at=row.created_at,
+            )
+            for row in repo.list_recent_runs(limit=30)
+        }
+        service = MapViewService(session)
+        if require_exact:
+            view = service.build_for_run(run_id) if run_id is not None else None
+        else:
+            resolved = PlanningService(session).resolve_run_id(run_id)
+            view = service.build_for_run(resolved) if resolved is not None else None
+        return options, view
+
+
+def _map_route_payload(route: VehicleMapRoute) -> dict[str, object]:
+    waypoints = route.waypoints or tuple(route.polyline)
+    arrows = leg_arrows(route.polyline, waypoints, color=route.color, arrows_per_leg=1)
+    return {
+        "code": route.vehicle_code,
+        "color": route.color,
+        "status": route.route_status,
+        "polyline": [list(p) for p in route.polyline],
+        "markers": [
+            {
+                "lat": p.latitude,
+                "lon": p.longitude,
+                "label": p.label,
+                "popup": p.popup_html,
+                "sequence": p.sequence,
+            }
+            for p in route.markers
+        ],
+        "arrows": arrows,
+    }
+
+
 @ui.page("/map")
 async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
         ops_page_header(
             "Mapa",
             "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku "
-            "(po drogach, gdy włączono OSRM); strzałki pokazują kierunek jazdy.",
+            "(po drogach, gdy włączono OSRM); strzałki pokazują kierunek jazdy. "
+            "Kliknij pojazd w legendzie, aby go wyróżnić; odznacz checkbox, aby ukryć.",
         )
         chosen_explicit = run_id is not None
         chosen = run_id if chosen_explicit else _active_run_id_from_storage()
-        view = await run.io_bound(_load_map_view, chosen, chosen_explicit)
+        plan_options, view = await run.io_bound(_load_map_page_bundle, chosen, chosen_explicit)
         if view is None:
             with ui.element("div").classes("cd-ops-panel w-full"):
                 ui.label("Brak planu do wyświetlenia.").classes("font-bold text-lg")
                 ui.label("Wygeneruj plan na stronie Plany, potem wróć tutaj.").classes(
                     "text-gray-600"
                 )
+                if plan_options:
+                    with ui.row().classes("cd-toolbar w-full items-end"):
+                        empty_select = (
+                            ui.select(
+                                options=plan_options,
+                                value=None,
+                                label="Plan",
+                            )
+                            .classes("cd-plan-select")
+                            .props("options-dense popup-content-class=cd-plan-select-popup")
+                        )
+
+                        def _open_selected() -> None:
+                            raw = empty_select.value
+                            if raw is None or str(raw) not in plan_options:
+                                ui.notify("Wybierz plan.", type="warning")
+                                return
+                            rid = int(str(raw))
+                            _set_active_run_id(rid)
+                            ui.navigate.to(f"/map?run_id={rid}")
+
+                        ui.button("Pokaż", on_click=_open_selected).props("color=primary")
                 ui.button("Przejdź do Planów", on_click=lambda: ui.navigate.to("/plans"))
             return
 
+        _set_active_run_id(view.run_id)
+        state: dict[str, object] = {
+            "status_filter": "",
+            "isolated": None,
+            "hidden": set(),
+            "show_arrows": True,
+        }
+        legend_rows: dict[str, ui.element] = {}
+        vehicle_checks: dict[str, ui.checkbox] = {}
+        route_status_by_code = {r.vehicle_code: r.route_status for r in view.routes}
+
+        def _hidden_dict() -> dict[str, bool]:
+            return {code: True for code in state["hidden"]}  # type: ignore[union-attr]
+
+        def _apply_map_js(*, fit: bool = False) -> None:
+            payload = {
+                "statusFilter": state["status_filter"] or "",
+                "isolated": state["isolated"],
+                "hidden": _hidden_dict(),
+                "showArrows": bool(state["show_arrows"]),
+                "hover": None,
+                "fit": fit,
+            }
+            ui.run_javascript(
+                "window.__cdMapApply && window.__cdMapApply("
+                + json.dumps(payload, ensure_ascii=False)
+                + ");"
+            )
+
+        def _sync_legend_rows() -> None:
+            isolated = state["isolated"]
+            status_filter = str(state["status_filter"] or "")
+            for code, row in legend_rows.items():
+                status_ok = not status_filter or route_status_by_code.get(code) == status_filter
+                row.set_visibility(status_ok)
+                if isolated == code and status_ok:
+                    row.classes(add="cd-map-legend-active")
+                else:
+                    row.classes(remove="cd-map-legend-active")
+
+        status_options = {
+            "": "Wszystkie statusy",
+            "proposed": route_status_pl("proposed"),
+            "approved": route_status_pl("approved"),
+            "completed": route_status_pl("completed"),
+        }
+
         with ui.element("div").classes("cd-ops-panel w-full"):
+            with ui.row().classes("cd-toolbar w-full items-end"):
+                plan_select = (
+                    ui.select(
+                        options=plan_options,
+                        value=str(view.run_id),
+                        label="Plan",
+                    )
+                    .classes("cd-plan-select")
+                    .props("options-dense popup-content-class=cd-plan-select-popup")
+                )
+                status_select = (
+                    ui.select(
+                        options=status_options,
+                        value="",
+                        label="Status trasy",
+                    )
+                    .classes("w-48")
+                    .props("options-dense")
+                )
+                arrows_cb = ui.checkbox("Strzałki", value=True)
+
+                def on_plan_change(_e=None) -> None:
+                    raw = plan_select.value
+                    if raw is None or str(raw) not in plan_options:
+                        return
+                    rid = int(str(raw))
+                    if rid == view.run_id:
+                        return
+                    _set_active_run_id(rid)
+                    ui.navigate.to(f"/map?run_id={rid}")
+
+                def on_status_change(_e=None) -> None:
+                    state["status_filter"] = str(status_select.value or "")
+                    state["isolated"] = None
+                    _sync_legend_rows()
+                    _apply_map_js(fit=True)
+
+                def on_arrows_change(_e=None) -> None:
+                    state["show_arrows"] = bool(arrows_cb.value)
+                    _apply_map_js()
+
+                plan_select.on_value_change(on_plan_change)
+                status_select.on_value_change(on_status_change)
+                arrows_cb.on_value_change(on_arrows_change)
+
+                ui.button(
+                    "Odśwież",
+                    icon="refresh",
+                    on_click=lambda: ui.navigate.to(f"/map?run_id={view.run_id}"),
+                ).props("outline")
+                ui.button(
+                    "Dopasuj",
+                    icon="fit_screen",
+                    on_click=lambda: ui.run_javascript("window.__cdMapFit && window.__cdMapFit();"),
+                ).props("outline")
+                enlarge_btn = ui.button("Powiększ", icon="open_in_full").props("flat dense no-caps")
+
             ui.label(
                 format_plan_label(
                     run_id=view.run_id,
@@ -1798,102 +1972,125 @@ async def map_page(run_id: int | None = None) -> None:
                 )
                 + f" · pojazdów na mapie: {len(view.routes)}"
             ).classes("font-medium")
+            if view.warnings:
+                with ui.column().classes("w-full gap-0"):
+                    for warning in view.warnings:
+                        ui.label(warning).classes("text-sm text-amber-800")
 
         with ui.row().classes("w-full gap-4 items-start flex-wrap"):
-            with (
-                ui.element("div")
-                .classes("cd-ops-panel")
-                .style("min-width:200px;flex:0 0 auto;padding:0.75rem 1rem;")
-            ):
-                ui.label("Legenda").classes("font-medium").style("color: var(--cd-heading)")
+            with ui.element("div").classes("cd-ops-panel cd-map-legend"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label("Legenda").classes("font-medium").style("color: var(--cd-heading)")
+
+                    def show_all() -> None:
+                        state["isolated"] = None
+                        state["hidden"] = set()
+                        for _code, cb in vehicle_checks.items():
+                            cb.value = True
+                        _sync_legend_rows()
+                        _apply_map_js(fit=True)
+
+                    ui.button("Pokaż wszystkie", on_click=show_all).props("flat dense no-caps")
                 for route in view.routes:
                     km = f"{route.distance_km:.1f} km" if route.distance_km is not None else "?"
                     status_pl = route_status_pl(route.route_status)
-                    with ui.row().classes("items-center gap-2"):
-                        ui.element("div").style(
-                            f"width:14px;height:14px;border-radius:2px;background:{route.color};"
+                    row = ui.element("div").classes("cd-map-legend-row")
+                    legend_rows[route.vehicle_code] = row
+                    with row:
+                        cb = ui.checkbox(value=True).props("dense")
+                        vehicle_checks[route.vehicle_code] = cb
+                        ui.element("div").classes("cd-map-legend-swatch").style(
+                            f"background:{route.color};"
                             + ("opacity:0.45;" if route.route_status != "approved" else "")
                         )
-                        ui.label(
+                        label = ui.label(
                             f"{route.vehicle_code} · {status_pl} · {len(route.markers)} pkt · {km}"
-                        ).classes("text-sm").style("color: var(--cd-body)")
+                        ).classes("cd-map-legend-label")
 
-            m = (
-                ui.leaflet(center=view.center, zoom=view.zoom)
-                .classes("flex-grow")
-                .style("height: 70vh; min-width: 320px;")
-            )
-            depot_marker = m.marker(
-                latlng=(view.depot.latitude, view.depot.longitude),
-                options={"title": "Magazyn"},
-            )
-            route_markers: list[tuple[object, str]] = []
-            arrows: list[dict[str, float | str]] = []
-            for route in view.routes:
-                approved = route.route_status == "approved"
-                m.generic_layer(
-                    name="polyline",
-                    args=[
-                        list(route.polyline),
-                        {
-                            "color": route.color,
-                            "weight": 5 if approved else 3,
-                            "opacity": 0.9 if approved else 0.45,
-                            "dashArray": None if approved else "8 8",
-                        },
-                    ],
+                    def _make_handlers(code: str):
+                        def _on_check(_e=None) -> None:
+                            hidden: set[str] = state["hidden"]  # type: ignore[assignment]
+                            checked = bool(vehicle_checks[code].value)
+                            if checked:
+                                hidden.discard(code)
+                            else:
+                                hidden.add(code)
+                                if state["isolated"] == code:
+                                    state["isolated"] = None
+                                    _sync_legend_rows()
+                            _apply_map_js(fit=True)
+
+                        def _on_isolate() -> None:
+                            if state["isolated"] == code:
+                                state["isolated"] = None
+                            else:
+                                state["isolated"] = code
+                                hidden: set[str] = state["hidden"]  # type: ignore[assignment]
+                                hidden.discard(code)
+                                vehicle_checks[code].value = True
+                            _sync_legend_rows()
+                            _apply_map_js(fit=True)
+
+                        def _on_hover_enter() -> None:
+                            ui.run_javascript(
+                                "window.__cdMapApply && window.__cdMapApply("
+                                + json.dumps({"hover": code}, ensure_ascii=False)
+                                + ");"
+                            )
+
+                        def _on_hover_leave() -> None:
+                            ui.run_javascript(
+                                "window.__cdMapApply && window.__cdMapApply("
+                                + json.dumps({"hover": None}, ensure_ascii=False)
+                                + ");"
+                            )
+
+                        return _on_check, _on_isolate, _on_hover_enter, _on_hover_leave
+
+                    on_check, on_isolate, on_enter, on_leave = _make_handlers(route.vehicle_code)
+                    cb.on_value_change(on_check)
+                    label.on("click", on_isolate)
+                    row.on("mouseenter", on_enter)
+                    row.on("mouseleave", on_leave)
+
+            map_compact_host = ui.element("div").classes("cd-map-host flex-grow")
+            with map_compact_host:
+                m = (
+                    ui.leaflet(center=view.center, zoom=view.zoom)
+                    .classes("w-full")
+                    .style("height: 70vh; min-width: 320px; width: 100%;")
                 )
-                arrows.extend(segment_arrows(route.polyline, color=route.color))
-                for point in route.markers:
-                    mk = m.marker(
-                        latlng=(point.latitude, point.longitude),
-                        options={"title": point.label},
-                    )
-                    route_markers.append((mk, point.popup_html))
+
+            enlarge_btn.on_click(
+                attach_element_enlarge(
+                    m,
+                    map_compact_host,
+                    title="Mapa tras",
+                    compact_style="height: 70vh; min-width: 320px; width: 100%;",
+                    enlarge_style=("height: calc(85vh - 4.5rem); width: 100%; min-width: 320px;"),
+                    on_opened=lambda: ui.run_javascript(
+                        "window.__cdMapInvalidate && window.__cdMapInvalidate();"
+                    ),
+                    on_restored=lambda: ui.run_javascript(
+                        "window.__cdMapInvalidate && window.__cdMapInvalidate();"
+                    ),
+                )
+            )
 
             await m.initialized()
-            depot_marker.run_method("bindPopup", view.depot.popup_html)
-            for mk, html in route_markers:
-                mk.run_method("bindPopup", html)  # type: ignore[attr-defined]
-
-            if arrows:
-                payload = json.dumps(arrows, ensure_ascii=False)
-                ui.run_javascript(
-                    f"""
-                    (() => {{
-                      const host = document.getElementById('c' + {m.id});
-                      const map = host && (host.map || (host.__vueParentComponent
-                        && host.__vueParentComponent.ctx
-                        && host.__vueParentComponent.ctx.map));
-                      if (!map || !window.L) return;
-                      const arrows = {payload};
-                      arrows.forEach(a => {{
-                        const icon = L.divIcon({{
-                          className: '',
-                          html: '<div style="transform:rotate(' + a.bearing +
-                            'deg);color:' + a.color +
-                            ';font-size:18px;text-shadow:0 0 3px #fff;">▲</div>',
-                          iconSize: [20, 20],
-                          iconAnchor: [10, 10],
-                        }});
-                        L.marker([a.lat, a.lon], {{icon: icon}}).addTo(map);
-                      }});
-                    }})();
-                    """
-                )
-
-            lats = [view.depot.latitude]
-            lons = [view.depot.longitude]
-            for route in view.routes:
-                for lat, lon in route.polyline:
-                    lats.append(lat)
-                    lons.append(lon)
-            if len(lats) > 1:
-                m.run_map_method(
-                    "fitBounds",
-                    [[min(lats), min(lons)], [max(lats), max(lons)]],
-                    {"padding": [40, 40]},
-                )
+            ui.run_javascript(CD_MAP_JS)
+            boot = {
+                "depot": {
+                    "lat": view.depot.latitude,
+                    "lon": view.depot.longitude,
+                    "title": view.depot.label,
+                    "popup": view.depot.popup_html,
+                },
+                "routes": [_map_route_payload(route) for route in view.routes],
+            }
+            ui.run_javascript(
+                f"window.__cdMapBoot('c{m.id}', {json.dumps(boot, ensure_ascii=False)});"
+            )
 
 
 @ui.page("/reports")

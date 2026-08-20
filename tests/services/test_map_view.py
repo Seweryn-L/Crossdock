@@ -27,6 +27,7 @@ def _settings() -> Settings:
         planning_date=date(2026, 7, 30),
         ship_lead_days=2,
         warehouse_capacity_kg=1_000_000.0,
+        use_osrm=False,
     )
 
 
@@ -78,6 +79,9 @@ def test_map_view_builds_polyline_in_sequence(db_session: Session) -> None:
     assert route.polyline[0] == route.polyline[-1]
     assert route.polyline[0] == (51.176, 4.836)
     assert len(route.markers) == 3
+    assert route.waypoints == route.polyline
+    assert all(m.sequence is not None for m in route.markers)
+    assert view.depot.label == "Magazyn"
 
 
 def test_map_view_prefers_stored_osrm_polyline(db_session: Session) -> None:

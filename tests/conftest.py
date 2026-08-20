@@ -10,8 +10,21 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from crossdock.config import get_settings
 from crossdock.storage.database import build_engine
 from crossdock.storage.tables import Base
+
+
+@pytest.fixture(autouse=True)
+def _unit_tests_disable_osrm(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep unit tests offline even when local .env has CROSSDOCK_USE_OSRM=true.
+
+    OSRM smoke tests pass ``use_osrm=True`` explicitly into ``Settings(...)``.
+    """
+    monkeypatch.setenv("CROSSDOCK_USE_OSRM", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

@@ -64,6 +64,7 @@ class MapPoint:
     label: str
     popup_html: str
     kind: str  # depot | drop
+    sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class VehicleMapRoute:
     # Closed path: depot → drops in sequence → depot (or denser OSRM geometry)
     polyline: tuple[tuple[float, float], ...]
     markers: tuple[MapPoint, ...]
+    # Sparse stop path (depot → drops → depot) for direction arrows / legs
+    waypoints: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -110,9 +113,9 @@ class MapViewService:
         depot = MapPoint(
             latitude=depot_lat,
             longitude=depot_lon,
-            label="Depot",
+            label="Magazyn",
             popup_html=(
-                f"<b>Depot cross-dock</b><br/>Herentals (MVP)<br/>{depot_lat:.4f}, {depot_lon:.4f}"
+                f"<b>Magazyn cross-dock</b><br/>Herentals<br/>{depot_lat:.4f}, {depot_lon:.4f}"
             ),
             kind="depot",
         )
@@ -164,6 +167,7 @@ class MapViewService:
                         label=item.delivery_code,
                         popup_html=popup,
                         kind="drop",
+                        sequence=item.sequence,
                     )
                 )
                 path.append((lat, lon))
@@ -174,9 +178,10 @@ class MapViewService:
                 # Only depot — nothing drawable for this vehicle
                 continue
             path.append((depot_lat, depot_lon))
+            waypoints = tuple(path)
             meta = routes_meta.get(vehicle_code)
             stored = _parse_polyline_json(meta.polyline_json if meta is not None else None)
-            polyline = stored if stored is not None else tuple(path)
+            polyline = stored if stored is not None else waypoints
             for lat, lon in polyline:
                 all_lats.append(lat)
                 all_lons.append(lon)
@@ -189,6 +194,7 @@ class MapViewService:
                     route_status=meta.route_status if meta is not None else "proposed",
                     polyline=polyline,
                     markers=tuple(markers),
+                    waypoints=waypoints,
                 )
             )
 
