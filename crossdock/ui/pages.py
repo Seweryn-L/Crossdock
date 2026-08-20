@@ -6,7 +6,6 @@ UI texts in Polish.
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -88,7 +87,11 @@ from crossdock.ui.labels import (
     route_status_pl,
 )
 from crossdock.ui.layout import ops_page_header, page_frame
-from crossdock.ui.map_leaflet_js import CD_MAP_JS
+from crossdock.ui.map_leaflet_js import (
+    arrows_javascript,
+    clear_arrows_javascript,
+    invalidate_map_javascript,
+)
 from crossdock.ui.widgets import (
     attach_element_enlarge,
     attach_grid_enlarge,
@@ -1793,26 +1796,28 @@ def _load_map_page_bundle(
         return options, view
 
 
-def _map_route_payload(route: VehicleMapRoute) -> dict[str, object]:
+def _map_route_arrows(route: VehicleMapRoute) -> list[dict[str, float | str]]:
     waypoints = route.waypoints or tuple(route.polyline)
-    arrows = leg_arrows(route.polyline, waypoints, color=route.color, arrows_per_leg=1)
-    return {
-        "code": route.vehicle_code,
-        "color": route.color,
-        "status": route.route_status,
-        "polyline": [list(p) for p in route.polyline],
-        "markers": [
-            {
-                "lat": p.latitude,
-                "lon": p.longitude,
-                "label": p.label,
-                "popup": p.popup_html,
-                "sequence": p.sequence,
-            }
-            for p in route.markers
-        ],
-        "arrows": arrows,
-    }
+    return leg_arrows(route.polyline, waypoints, color=route.color, arrows_per_leg=1)
+
+
+def _visible_map_routes(
+    view: MapPlanView,
+    *,
+    status_filter: str,
+    isolated: str | None,
+    hidden: set[str],
+) -> list[VehicleMapRoute]:
+    out: list[VehicleMapRoute] = []
+    for route in view.routes:
+        if status_filter and route.route_status != status_filter:
+            continue
+        if route.vehicle_code in hidden:
+            continue
+        if isolated is not None and route.vehicle_code != isolated:
+            continue
+        out.append(route)
+    return out
 
 
 @ui.page("/map")
@@ -1822,7 +1827,7 @@ async def map_page(run_id: int | None = None) -> None:
             "Mapa",
             "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku "
             "(po drogach, gdy włączono OSRM); strzałki pokazują kierunek jazdy. "
-            "Kliknij pojazd w legendzie, aby go wyróżnić; odznacz checkbox, aby ukryć.",
+            "Legenda otwiera się przyciskiem — nie zabiera miejsca mapie.",
         )
         chosen_explicit = run_id is not None
         chosen = run_id if chosen_explicit else _active_run_id_from_storage()
@@ -1859,44 +1864,29 @@ async def map_page(run_id: int | None = None) -> None:
             return
 
         _set_active_run_id(view.run_id)
+
+        raw_hidden = app.storage.user.get("map_hidden") or []
+        hidden_codes: set[str] = (
+            {str(x) for x in raw_hidden} if isinstance(raw_hidden, list) else set()
+        )
+        raw_iso = app.storage.user.get("map_isolated")
+        isolated_code: str | None = str(raw_iso) if raw_iso else None
+        status_filter = str(app.storage.user.get("map_status_filter") or "")
+        show_arrows = app.storage.user.get("map_show_arrows")
+        if not isinstance(show_arrows, bool):
+            show_arrows = True
+
         state: dict[str, object] = {
-            "status_filter": "",
-            "isolated": None,
-            "hidden": set(),
-            "show_arrows": True,
+            "status_filter": status_filter,
+            "isolated": isolated_code,
+            "hidden": hidden_codes,
+            "show_arrows": show_arrows,
         }
-        legend_rows: dict[str, ui.element] = {}
         vehicle_checks: dict[str, ui.checkbox] = {}
+        legend_rows: dict[str, ui.element] = {}
         route_status_by_code = {r.vehicle_code: r.route_status for r in view.routes}
-
-        def _hidden_dict() -> dict[str, bool]:
-            return {code: True for code in state["hidden"]}  # type: ignore[union-attr]
-
-        def _apply_map_js(*, fit: bool = False) -> None:
-            payload = {
-                "statusFilter": state["status_filter"] or "",
-                "isolated": state["isolated"],
-                "hidden": _hidden_dict(),
-                "showArrows": bool(state["show_arrows"]),
-                "hover": None,
-                "fit": fit,
-            }
-            ui.run_javascript(
-                "window.__cdMapApply && window.__cdMapApply("
-                + json.dumps(payload, ensure_ascii=False)
-                + ");"
-            )
-
-        def _sync_legend_rows() -> None:
-            isolated = state["isolated"]
-            status_filter = str(state["status_filter"] or "")
-            for code, row in legend_rows.items():
-                status_ok = not status_filter or route_status_by_code.get(code) == status_filter
-                row.set_visibility(status_ok)
-                if isolated == code and status_ok:
-                    row.classes(add="cd-map-legend-active")
-                else:
-                    row.classes(remove="cd-map-legend-active")
+        map_ref: dict[str, object] = {"m": None}
+        suppress_events = {"v": True}
 
         status_options = {
             "": "Wszystkie statusy",
@@ -1904,6 +1894,99 @@ async def map_page(run_id: int | None = None) -> None:
             "approved": route_status_pl("approved"),
             "completed": route_status_pl("completed"),
         }
+
+        def _persist_and_reload() -> None:
+            app.storage.user["map_status_filter"] = state["status_filter"]
+            app.storage.user["map_isolated"] = state["isolated"]
+            app.storage.user["map_hidden"] = list(state["hidden"])  # type: ignore[arg-type]
+            app.storage.user["map_show_arrows"] = state["show_arrows"]
+            ui.navigate.to(f"/map?run_id={view.run_id}")
+
+        def _sync_legend_rows() -> None:
+            isolated = state["isolated"]
+            filt = str(state["status_filter"] or "")
+            for code, row in legend_rows.items():
+                status_ok = not filt or route_status_by_code.get(code) == filt
+                row.set_visibility(status_ok)
+                if isolated == code and status_ok:
+                    row.classes(add="cd-map-legend-active")
+                else:
+                    row.classes(remove="cd-map-legend-active")
+
+        legend_dialog = ui.dialog()
+        with legend_dialog, ui.card().classes("cd-map-legend-card p-4 gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("Legenda pojazdów").classes("font-medium").style(
+                    "color: var(--cd-heading)"
+                )
+                ui.button(icon="close", on_click=legend_dialog.close).props("flat round dense")
+
+            def show_all() -> None:
+                if suppress_events["v"]:
+                    return
+                state["isolated"] = None
+                state["hidden"] = set()
+                for _code, cb in vehicle_checks.items():
+                    cb.value = True
+                _sync_legend_rows()
+                legend_dialog.close()
+                _persist_and_reload()
+
+            ui.button("Pokaż wszystkie", on_click=show_all).props("outline dense no-caps")
+            ui.label("Odznacz = ukryj. Klik w nazwę = tylko ten pojazd.").classes(
+                "text-sm text-gray-600"
+            )
+
+            for route in view.routes:
+                km = f"{route.distance_km:.1f} km" if route.distance_km is not None else "?"
+                status_pl = route_status_pl(route.route_status)
+                row = ui.element("div").classes("cd-map-legend-row")
+                legend_rows[route.vehicle_code] = row
+                with row:
+                    cb = ui.checkbox(value=route.vehicle_code not in hidden_codes).props("dense")
+                    vehicle_checks[route.vehicle_code] = cb
+                    ui.element("div").classes("cd-map-legend-swatch").style(
+                        f"background:{route.color};"
+                        + ("opacity:0.45;" if route.route_status != "approved" else "")
+                    )
+                    label = ui.label(
+                        f"{route.vehicle_code} · {status_pl} · {len(route.markers)} pkt · {km}"
+                    ).classes("cd-map-legend-label")
+
+                def _make_handlers(code: str):
+                    def _on_check(_e=None) -> None:
+                        if suppress_events["v"]:
+                            return
+                        hidden: set[str] = state["hidden"]  # type: ignore[assignment]
+                        if bool(vehicle_checks[code].value):
+                            hidden.discard(code)
+                        else:
+                            hidden.add(code)
+                            if state["isolated"] == code:
+                                state["isolated"] = None
+                        legend_dialog.close()
+                        _persist_and_reload()
+
+                    def _on_isolate() -> None:
+                        if suppress_events["v"]:
+                            return
+                        if state["isolated"] == code:
+                            state["isolated"] = None
+                        else:
+                            state["isolated"] = code
+                            hidden: set[str] = state["hidden"]  # type: ignore[assignment]
+                            hidden.discard(code)
+                            vehicle_checks[code].value = True
+                        legend_dialog.close()
+                        _persist_and_reload()
+
+                    return _on_check, _on_isolate
+
+                on_check, on_isolate = _make_handlers(route.vehicle_code)
+                cb.on_value_change(on_check)
+                label.on("click", on_isolate)
+
+        _sync_legend_rows()
 
         with ui.element("div").classes("cd-ops-panel w-full"):
             with ui.row().classes("cd-toolbar w-full items-end"):
@@ -1919,15 +2002,17 @@ async def map_page(run_id: int | None = None) -> None:
                 status_select = (
                     ui.select(
                         options=status_options,
-                        value="",
+                        value=status_filter,
                         label="Status trasy",
                     )
                     .classes("w-48")
                     .props("options-dense")
                 )
-                arrows_cb = ui.checkbox("Strzałki", value=True)
+                arrows_cb = ui.checkbox("Strzałki", value=show_arrows)
 
                 def on_plan_change(_e=None) -> None:
+                    if suppress_events["v"]:
+                        return
                     raw = plan_select.value
                     if raw is None or str(raw) not in plan_options:
                         return
@@ -1938,159 +2023,151 @@ async def map_page(run_id: int | None = None) -> None:
                     ui.navigate.to(f"/map?run_id={rid}")
 
                 def on_status_change(_e=None) -> None:
+                    if suppress_events["v"]:
+                        return
                     state["status_filter"] = str(status_select.value or "")
                     state["isolated"] = None
-                    _sync_legend_rows()
-                    _apply_map_js(fit=True)
+                    _persist_and_reload()
 
                 def on_arrows_change(_e=None) -> None:
+                    if suppress_events["v"]:
+                        return
                     state["show_arrows"] = bool(arrows_cb.value)
-                    _apply_map_js()
+                    app.storage.user["map_show_arrows"] = state["show_arrows"]
+                    m = map_ref.get("m")
+                    if m is None:
+                        return
+                    mid = m.id  # type: ignore[attr-defined]
+                    if state["show_arrows"]:
+                        visible = _visible_map_routes(
+                            view,
+                            status_filter=str(state["status_filter"] or ""),
+                            isolated=state["isolated"],  # type: ignore[arg-type]
+                            hidden=state["hidden"],  # type: ignore[arg-type]
+                        )
+                        arrows: list[dict[str, float | str]] = []
+                        for route in visible:
+                            arrows.extend(_map_route_arrows(route))
+                        ui.run_javascript(arrows_javascript(mid, arrows))
+                    else:
+                        ui.run_javascript(clear_arrows_javascript(mid))
 
                 plan_select.on_value_change(on_plan_change)
                 status_select.on_value_change(on_status_change)
                 arrows_cb.on_value_change(on_arrows_change)
 
+                ui.button("Legenda", icon="list", on_click=legend_dialog.open).props("outline")
                 ui.button(
                     "Odśwież",
                     icon="refresh",
                     on_click=lambda: ui.navigate.to(f"/map?run_id={view.run_id}"),
                 ).props("outline")
-                ui.button(
-                    "Dopasuj",
-                    icon="fit_screen",
-                    on_click=lambda: ui.run_javascript("window.__cdMapFit && window.__cdMapFit();"),
-                ).props("outline")
+                fit_btn = ui.button("Dopasuj", icon="fit_screen").props("outline")
                 enlarge_btn = ui.button("Powiększ", icon="open_in_full").props("flat dense no-caps")
 
-            ui.label(
-                format_plan_label(
-                    run_id=view.run_id,
-                    display_name=view.display_name,
-                    plan_status=view.plan_status,
-                    created_at=view.created_at,
-                )
-                + f" · pojazdów na mapie: {len(view.routes)}"
-            ).classes("font-medium")
+            visible_routes = _visible_map_routes(
+                view,
+                status_filter=str(state["status_filter"] or ""),
+                isolated=state["isolated"],  # type: ignore[arg-type]
+                hidden=state["hidden"],  # type: ignore[arg-type]
+            )
+            meta = format_plan_label(
+                run_id=view.run_id,
+                display_name=view.display_name,
+                plan_status=view.plan_status,
+                created_at=view.created_at,
+            )
+            meta += f" · pojazdów: {len(view.routes)}"
+            if len(visible_routes) != len(view.routes):
+                meta += f" · widocznych: {len(visible_routes)}"
+            ui.label(meta).classes("font-medium")
             if view.warnings:
                 with ui.column().classes("w-full gap-0"):
                     for warning in view.warnings:
                         ui.label(warning).classes("text-sm text-amber-800")
 
-        with ui.row().classes("w-full gap-4 items-start flex-wrap"):
-            with ui.element("div").classes("cd-ops-panel cd-map-legend"):
-                with ui.row().classes("w-full items-center justify-between"):
-                    ui.label("Legenda").classes("font-medium").style("color: var(--cd-heading)")
+        map_compact_host = ui.element("div").classes("cd-map-host w-full")
+        with map_compact_host:
+            m = (
+                ui.leaflet(center=view.center, zoom=view.zoom)
+                .classes("w-full")
+                .style("height: 70vh; min-width: 320px; width: 100%;")
+            )
+        map_ref["m"] = m
 
-                    def show_all() -> None:
-                        state["isolated"] = None
-                        state["hidden"] = set()
-                        for _code, cb in vehicle_checks.items():
-                            cb.value = True
-                        _sync_legend_rows()
-                        _apply_map_js(fit=True)
+        depot_marker = m.marker(
+            latlng=(view.depot.latitude, view.depot.longitude),
+            options={"title": view.depot.label},
+        )
+        route_markers: list[tuple[object, str]] = []
+        all_arrows: list[dict[str, float | str]] = []
+        for route in visible_routes:
+            approved = route.route_status == "approved"
+            isolated_here = state["isolated"] == route.vehicle_code
+            weight = 6 if isolated_here else (5 if approved else 3)
+            opacity = 1.0 if isolated_here or approved else 0.55
+            m.generic_layer(
+                name="polyline",
+                args=[
+                    list(route.polyline),
+                    {
+                        "color": route.color,
+                        "weight": weight,
+                        "opacity": opacity,
+                        "dashArray": None if approved else "8 8",
+                    },
+                ],
+            )
+            if state["show_arrows"]:
+                all_arrows.extend(_map_route_arrows(route))
+            for point in route.markers:
+                seq = point.sequence
+                title = f"{seq} · {point.label}" if seq is not None else point.label
+                mk = m.marker(
+                    latlng=(point.latitude, point.longitude),
+                    options={"title": title},
+                )
+                route_markers.append((mk, point.popup_html))
 
-                    ui.button("Pokaż wszystkie", on_click=show_all).props("flat dense no-caps")
-                for route in view.routes:
-                    km = f"{route.distance_km:.1f} km" if route.distance_km is not None else "?"
-                    status_pl = route_status_pl(route.route_status)
-                    row = ui.element("div").classes("cd-map-legend-row")
-                    legend_rows[route.vehicle_code] = row
-                    with row:
-                        cb = ui.checkbox(value=True).props("dense")
-                        vehicle_checks[route.vehicle_code] = cb
-                        ui.element("div").classes("cd-map-legend-swatch").style(
-                            f"background:{route.color};"
-                            + ("opacity:0.45;" if route.route_status != "approved" else "")
-                        )
-                        label = ui.label(
-                            f"{route.vehicle_code} · {status_pl} · {len(route.markers)} pkt · {km}"
-                        ).classes("cd-map-legend-label")
-
-                    def _make_handlers(code: str):
-                        def _on_check(_e=None) -> None:
-                            hidden: set[str] = state["hidden"]  # type: ignore[assignment]
-                            checked = bool(vehicle_checks[code].value)
-                            if checked:
-                                hidden.discard(code)
-                            else:
-                                hidden.add(code)
-                                if state["isolated"] == code:
-                                    state["isolated"] = None
-                                    _sync_legend_rows()
-                            _apply_map_js(fit=True)
-
-                        def _on_isolate() -> None:
-                            if state["isolated"] == code:
-                                state["isolated"] = None
-                            else:
-                                state["isolated"] = code
-                                hidden: set[str] = state["hidden"]  # type: ignore[assignment]
-                                hidden.discard(code)
-                                vehicle_checks[code].value = True
-                            _sync_legend_rows()
-                            _apply_map_js(fit=True)
-
-                        def _on_hover_enter() -> None:
-                            ui.run_javascript(
-                                "window.__cdMapApply && window.__cdMapApply("
-                                + json.dumps({"hover": code}, ensure_ascii=False)
-                                + ");"
-                            )
-
-                        def _on_hover_leave() -> None:
-                            ui.run_javascript(
-                                "window.__cdMapApply && window.__cdMapApply("
-                                + json.dumps({"hover": None}, ensure_ascii=False)
-                                + ");"
-                            )
-
-                        return _on_check, _on_isolate, _on_hover_enter, _on_hover_leave
-
-                    on_check, on_isolate, on_enter, on_leave = _make_handlers(route.vehicle_code)
-                    cb.on_value_change(on_check)
-                    label.on("click", on_isolate)
-                    row.on("mouseenter", on_enter)
-                    row.on("mouseleave", on_leave)
-
-            map_compact_host = ui.element("div").classes("cd-map-host flex-grow")
-            with map_compact_host:
-                m = (
-                    ui.leaflet(center=view.center, zoom=view.zoom)
-                    .classes("w-full")
-                    .style("height: 70vh; min-width: 320px; width: 100%;")
+        def _fit_bounds() -> None:
+            lats = [view.depot.latitude]
+            lons = [view.depot.longitude]
+            for route in visible_routes:
+                for lat, lon in route.polyline:
+                    lats.append(lat)
+                    lons.append(lon)
+            if len(lats) > 1:
+                m.run_map_method(
+                    "fitBounds",
+                    [[min(lats), min(lons)], [max(lats), max(lons)]],
+                    {"padding": [40, 40]},
                 )
 
-            enlarge_btn.on_click(
-                attach_element_enlarge(
-                    m,
-                    map_compact_host,
-                    title="Mapa tras",
-                    compact_style="height: 70vh; min-width: 320px; width: 100%;",
-                    enlarge_style=("height: calc(85vh - 4.5rem); width: 100%; min-width: 320px;"),
-                    on_opened=lambda: ui.run_javascript(
-                        "window.__cdMapInvalidate && window.__cdMapInvalidate();"
-                    ),
-                    on_restored=lambda: ui.run_javascript(
-                        "window.__cdMapInvalidate && window.__cdMapInvalidate();"
-                    ),
-                )
-            )
+        fit_btn.on_click(lambda: _fit_bounds())
 
-            await m.initialized()
-            ui.run_javascript(CD_MAP_JS)
-            boot = {
-                "depot": {
-                    "lat": view.depot.latitude,
-                    "lon": view.depot.longitude,
-                    "title": view.depot.label,
-                    "popup": view.depot.popup_html,
-                },
-                "routes": [_map_route_payload(route) for route in view.routes],
-            }
-            ui.run_javascript(
-                f"window.__cdMapBoot('c{m.id}', {json.dumps(boot, ensure_ascii=False)});"
+        enlarge_btn.on_click(
+            attach_element_enlarge(
+                m,
+                map_compact_host,
+                title="Mapa tras",
+                compact_style="height: 70vh; min-width: 320px; width: 100%;",
+                enlarge_style=("height: calc(85vh - 4.5rem); width: 100%; min-width: 320px;"),
+                toolbar_builder=lambda: ui.button(
+                    "Legenda", icon="list", on_click=legend_dialog.open
+                ).props("outline"),
+                on_opened=lambda: ui.run_javascript(invalidate_map_javascript(m.id)),
+                on_restored=lambda: ui.run_javascript(invalidate_map_javascript(m.id)),
             )
+        )
+
+        await m.initialized()
+        depot_marker.run_method("bindPopup", view.depot.popup_html)
+        for mk, html in route_markers:
+            mk.run_method("bindPopup", html)  # type: ignore[attr-defined]
+        if all_arrows:
+            ui.run_javascript(arrows_javascript(m.id, all_arrows))
+        _fit_bounds()
+        suppress_events["v"] = False
 
 
 @ui.page("/reports")

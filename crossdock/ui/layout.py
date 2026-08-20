@@ -848,12 +848,10 @@ body, .nicegui-content, .q-page, .q-layout {
   width: 100% !important;
 }
 .cd-grid-host { width: 100% !important; }
-.cd-map-legend {
-  min-width: 220px !important;
-  max-width: 280px !important;
-  flex: 0 0 auto !important;
-  padding: 0.75rem 1rem !important;
-  max-height: 70vh !important;
+.cd-map-legend-card {
+  min-width: min(22rem, 92vw) !important;
+  max-width: 28rem !important;
+  max-height: 80vh !important;
   overflow-y: auto !important;
 }
 .cd-map-legend-row {
@@ -887,21 +885,6 @@ body, .nicegui-content, .q-page, .q-layout {
   flex: 1 1 auto !important;
   min-width: 320px !important;
   width: 100% !important;
-}
-.cd-map-seq-badge {
-  background: var(--badge-bg, #377eb8) !important;
-  color: #fff !important;
-  border: 2px solid #fff !important;
-  border-radius: 50% !important;
-  width: 22px !important;
-  height: 22px !important;
-  font-size: 11px !important;
-  font-weight: 700 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.35) !important;
-  font-family: var(--cd-font) !important;
 }
 .cd-plan-meta {
   display: flex !important;
