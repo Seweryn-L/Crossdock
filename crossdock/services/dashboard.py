@@ -40,7 +40,10 @@ def collect_dashboard(session: Session, *, run_id: int | None = None) -> Dashboa
     planned_n = len(orders.list_by_status(OrderStatus.PLANNED))
     approved_n = len(orders.list_by_status(OrderStatus.APPROVED))
     repo = AssignmentRepository(session)
-    resolved = repo.resolve_run_id(run_id)
+    # Continuous ops: always the latest generation unless an explicit run is forced.
+    resolved = run_id if run_id is not None else repo.resolve_operational_run_id()
+    if resolved is not None and repo.get_run(resolved) is None:
+        resolved = repo.resolve_operational_run_id()
     view = build_plan_view(session, run_id=resolved)
     status = collect_system_status(session)
     queue_count = len(list_queue(session))

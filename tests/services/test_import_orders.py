@@ -44,3 +44,34 @@ def test_reimport_skips_existing_delivery_codes(db_session: Session) -> None:
     assert not any("…" in msg and "już w bazie" in msg for msg in second.warnings)
     assert {item.delivery_code for item in second.skipped} == set(second.skipped_codes)
     assert all(item.existing_order_id is not None for item in second.skipped)
+    assert second.missing_from_file == ()
+
+
+def test_import_reports_missing_active_codes(db_session: Session) -> None:
+    from datetime import date
+
+    from crossdock.domain.models import Location, Order, OrderStatus, Shipment
+
+    hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="ONLY-IN-DB",
+                shipments=[Shipment(shipment_number="S1", weight_kg=100)],
+                pickup_location=hub,
+                delivery_location=Location(
+                    name="Cust", city="Ghent", country="BE", latitude=51.05, longitude=3.72
+                ),
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )
+    fixture = company_orders_fixture()
+    mapping = load_excel_column_mapping(MAPPING)
+    outcome = ImportOrdersService(db_session, mapping=mapping, default_delivery_days=7).import_path(
+        fixture, username="tester"
+    )
+    missing_codes = {m.delivery_code for m in outcome.missing_from_file}
+    assert "ONLY-IN-DB" in missing_codes
+    assert any("brakuje" in w for w in outcome.warnings)

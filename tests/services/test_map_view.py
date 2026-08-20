@@ -78,6 +78,10 @@ def test_map_view_builds_polyline_in_sequence(db_session: Session) -> None:
     assert len(route.polyline) == len(route.markers) + 2
     assert route.polyline[0] == route.polyline[-1]
     assert route.polyline[0] == (51.176, 4.836)
+    assert route.tooltip_html
+    assert route.detail_html
+    assert "T1" in route.tooltip_html or route.vehicle_code in route.tooltip_html
+    assert route.order_count >= 1
     assert len(route.markers) == 3
     assert route.waypoints == route.polyline
     assert all(m.sequence is not None for m in route.markers)

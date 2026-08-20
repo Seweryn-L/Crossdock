@@ -924,6 +924,9 @@ class PlanningService:
     def resolve_run_id(self, preferred: int | None) -> int | None:
         return AssignmentRepository(self._session).resolve_run_id(preferred)
 
+    def resolve_operational_run_id(self) -> int | None:
+        return AssignmentRepository(self._session).resolve_operational_run_id()
+
     def create_empty_plan(self, *, username: str) -> int:
         run_id = AssignmentRepository(self._session).save_plan_run(
             username=username,

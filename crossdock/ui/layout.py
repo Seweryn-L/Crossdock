@@ -139,7 +139,7 @@ def register_theme_bootstrap() -> None:
 NAV_ITEMS = [
     ("Pulpit", "/"),
     ("Zlecenia", "/orders"),
-    ("Plany", "/plans"),
+    ("Operacje", "/plans"),
     ("Mapa", "/map"),
     ("Magazyn", "/warehouse"),
     ("Raporty", "/reports"),

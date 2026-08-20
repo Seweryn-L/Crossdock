@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -179,6 +180,34 @@ class OrderRepository:
             .order_by(OrderRow.delivery_date, OrderRow.delivery_code)
         )
         return [_to_domain_order(r) for r in self._session.scalars(stmt).all()]
+
+    def list_filtered(
+        self,
+        *,
+        statuses: list[OrderStatus] | None = None,
+        due_from: date | None = None,
+        due_to: date | None = None,
+        exclude_statuses: list[OrderStatus] | None = None,
+    ) -> list[Order]:
+        """List orders with optional status and delivery_date range filters."""
+        stmt = select(OrderRow).options(selectinload(OrderRow.shipments))
+        if statuses:
+            stmt = stmt.where(OrderRow.status.in_([s.value for s in statuses]))
+        if exclude_statuses:
+            stmt = stmt.where(OrderRow.status.notin_([s.value for s in exclude_statuses]))
+        if due_from is not None:
+            stmt = stmt.where(OrderRow.delivery_date >= due_from)
+        if due_to is not None:
+            stmt = stmt.where(OrderRow.delivery_date <= due_to)
+        stmt = stmt.order_by(OrderRow.delivery_date, OrderRow.delivery_code)
+        return [_to_domain_order(r) for r in self._session.scalars(stmt).all()]
+
+    def list_active_delivery_codes(self) -> set[str]:
+        """Delivery codes for orders that are not yet delivered (ops pool)."""
+        rows = self._session.execute(
+            select(OrderRow.delivery_code).where(OrderRow.status != OrderStatus.DELIVERED.value)
+        ).all()
+        return {str(code) for (code,) in rows}
 
     def list_by_status(self, status: OrderStatus) -> list[Order]:
         stmt = (
@@ -649,6 +678,21 @@ class AssignmentRepository:
                 return run.id
         latest = self.get_latest_run()
         return latest.id if latest else None
+
+    def resolve_operational_run_id(self) -> int | None:
+        """Latest generation — continuous ops default (no plan picker)."""
+        latest = self.get_latest_run()
+        return latest.id if latest else None
+
+    def count_routes_by_status(self, run_id: int) -> dict[str, int]:
+        counts = {"proposed": 0, "approved": 0, "completed": 0}
+        for route in self.list_routes_for_run(run_id):
+            status = route.route_status or "proposed"
+            if status in counts:
+                counts[status] += 1
+            else:
+                counts["proposed"] += 1
+        return counts
 
     def list_recent_runs(self, *, limit: int = 30) -> list[AssignmentRunRow]:
         return list(

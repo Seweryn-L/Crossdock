@@ -26,15 +26,15 @@ def test_ui_sources_are_utf8_without_replacement() -> None:
 def test_polish_labels_are_intact() -> None:
     pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
     assert "Usuń zaznaczone" in pages
-    assert "Plany FTL" in pages
-    assert "FTL (full truckload)" in pages
-    assert "Plan transportów całopojazdowych" not in pages
-    assert "całopojazdowe" in pages
+    assert "Operacje dnia" in pages
+    assert "Generuj" in pages
+    assert "całopojazdowe" not in pages or "FTL" in pages
     assert "wyświetlenia" in pages
     assert "Przesyłki" in pages
     assert "Zapełnienie" in pages
-    assert "Nowy plan" in pages
+    assert "Nowa pusta generacja" in pages
     assert "Wynik importu" in pages
+    assert "Historia generacji" in pages
     assert "Pokaż log" in pages
     assert "Już w systemie" in pages
     assert "config/excel_column_mapping.json" not in pages
@@ -43,11 +43,15 @@ def test_polish_labels_are_intact() -> None:
     assert "haversine" not in pages
     assert "(placeholder)" not in pages
     assert "Wczytaj seed" not in pages
+    layout = (UI_DIR / "layout.py").read_text(encoding="utf-8")
+    assert '("Operacje", "/plans")' in layout
     dashboard = (UI_DIR / "ops_dashboard.py").read_text(encoding="utf-8")
     assert "Jedzie (trasy)" in dashboard
     assert "Zostaje w magazynie" in dashboard
     assert "Wszystkie zlecenia" in dashboard
-    assert "Aktywny plan" in dashboard
+    assert "Stan operacyjny" in dashboard
+    assert "Otwórz operacje" in dashboard
+    assert "Aktywny plan" not in dashboard
     assert "Trasy w drodze" in dashboard
     assert "Zrealizowane" in pages
     assert "Do kolejki" in pages
@@ -78,7 +82,7 @@ def test_plan_label_format() -> None:
         plan_status="draft",
         created_at=stamp,
     )
-    assert unnamed == "Plan #3 · roboczy · 13.08 14:22"
+    assert unnamed == "Generacja #3 · roboczy · 13.08 14:22"
 
 
 def test_ui_uses_self_hosted_inter_not_georgia() -> None:

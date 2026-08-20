@@ -1,12 +1,17 @@
 """Polish display labels for UI — re-export shared text_pl helpers."""
 
 from crossdock.text_pl import (
+    APPROVE_ROUTE_HINT,
     BUFFER_ACTION_PL,
+    COMPLETE_ROUTE_HINT,
+    DELETE_RUN_HINT,
+    GENERATE_PROTECT_HINT,
     ORDER_STATUS_PL,
     PLAN_NAME_MAX_LEN,
     PLAN_STATUS_PL,
     QUEUE_STATUS_PL,
     ROUTE_STATUS_PL,
+    UNLOCK_ROUTE_HINT,
     buffer_action_pl,
     format_plan_label,
     order_status_pl,
@@ -16,12 +21,17 @@ from crossdock.text_pl import (
 )
 
 __all__ = [
+    "APPROVE_ROUTE_HINT",
     "BUFFER_ACTION_PL",
+    "COMPLETE_ROUTE_HINT",
+    "DELETE_RUN_HINT",
+    "GENERATE_PROTECT_HINT",
     "ORDER_STATUS_PL",
     "PLAN_NAME_MAX_LEN",
     "PLAN_STATUS_PL",
     "QUEUE_STATUS_PL",
     "ROUTE_STATUS_PL",
+    "UNLOCK_ROUTE_HINT",
     "buffer_action_pl",
     "format_plan_label",
     "order_status_pl",

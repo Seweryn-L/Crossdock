@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository
+from crossdock.text_pl import route_status_pl
 
 # Stable palette for vehicle polylines / legend.
 _VEHICLE_COLORS: tuple[str, ...] = (
@@ -79,6 +80,11 @@ class VehicleMapRoute:
     markers: tuple[MapPoint, ...]
     # Sparse stop path (depot → drops → depot) for direction arrows / legs
     waypoints: tuple[tuple[float, float], ...] = ()
+    order_count: int = 0
+    cities_summary: str = ""
+    tooltip_html: str = ""
+    detail_html: str = ""
+    departure_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class MapViewService:
             color = color_for_vehicle(vehicle_code)
             markers: list[MapPoint] = []
             path: list[tuple[float, float]] = [(depot_lat, depot_lon)]
+            cities: list[str] = []
             for item in vehicle_items:
                 order = orders.get_by_id(item.order_id)
                 if order is None:
@@ -153,12 +160,15 @@ class MapViewService:
                     )
                     continue
                 city = order.delivery_location.city or "—"
+                cities.append(city)
+                due = order.delivery_date.isoformat() if order.delivery_date else "—"
                 popup = (
                     f"<b>{item.delivery_code}</b><br/>"
                     f"Pojazd: {vehicle_code}<br/>"
                     f"Kolejność: {item.sequence}<br/>"
                     f"Miasto: {city}<br/>"
-                    f"Waga: {item.weight_kg:.1f} kg"
+                    f"Waga: {item.weight_kg:.1f} kg<br/>"
+                    f"Termin: {due}"
                 )
                 markers.append(
                     MapPoint(
@@ -185,16 +195,49 @@ class MapViewService:
             for lat, lon in polyline:
                 all_lats.append(lat)
                 all_lons.append(lon)
+            status = meta.route_status if meta is not None else "proposed"
+            km = meta.distance_km if meta else None
+            cost = meta.cost_eur if meta else None
+            unique_cities = list(dict.fromkeys(cities))
+            if len(unique_cities) <= 3:
+                cities_summary = ", ".join(unique_cities) if unique_cities else "—"
+            else:
+                cities_summary = ", ".join(unique_cities[:3]) + f"… (+{len(unique_cities) - 3})"
+            km_txt = f"{km:.1f} km" if km is not None else "—"
+            cost_txt = f"{cost:.0f} €" if cost is not None else "—"
+            status_pl = route_status_pl(status)
+            drop_lines = "<br/>".join(
+                f"{m.sequence}. {m.label}" for m in markers if m.sequence is not None
+            )
+            tooltip_html = (
+                f"<b>{vehicle_code}</b> · {status_pl}<br/>"
+                f"Dropy: {len(markers)} · zlecenia: {len(markers)}<br/>"
+                f"{cities_summary}<br/>"
+                f"{km_txt} · {cost_txt}"
+            )
+            detail_html = (
+                f"<b>{vehicle_code}</b><br/>"
+                f"Status: {status_pl}<br/>"
+                f"Zlecenia / dropy: {len(markers)}<br/>"
+                f"Miasta: {cities_summary}<br/>"
+                f"Dystans: {km_txt}<br/>"
+                f"Koszt: {cost_txt}<br/>"
+                f"<br/><b>Kolejność:</b><br/>{drop_lines or '—'}"
+            )
             vehicle_routes.append(
                 VehicleMapRoute(
                     vehicle_code=vehicle_code,
                     color=color,
-                    distance_km=meta.distance_km if meta else None,
-                    cost_eur=meta.cost_eur if meta else None,
-                    route_status=meta.route_status if meta is not None else "proposed",
+                    distance_km=km,
+                    cost_eur=cost,
+                    route_status=status,
                     polyline=polyline,
                     markers=tuple(markers),
                     waypoints=waypoints,
+                    order_count=len(markers),
+                    cities_summary=cities_summary,
+                    tooltip_html=tooltip_html,
+                    detail_html=detail_html,
                 )
             )
 

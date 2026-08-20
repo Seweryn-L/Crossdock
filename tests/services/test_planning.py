@@ -324,7 +324,7 @@ def test_rename_and_list_recent_plans(db_session: Session) -> None:
     assert listed
     assert listed[0].run_id == plan.run_id
     assert listed[0].display_name is None
-    assert listed[0].label.startswith("Plan #")
+    assert listed[0].label.startswith("Generacja #")
     assert "roboczy" in listed[0].label
 
     stored = service.rename_plan(

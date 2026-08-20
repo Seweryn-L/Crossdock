@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
-from crossdock.domain.models import Location, Order
+from crossdock.domain.models import Location, Order, OrderStatus
 from crossdock.excel_mapping import ExcelColumnMapping, load_excel_column_mapping
 from crossdock.ingest.excel_import import ExcelOrderSource
 from crossdock.ingest.ports import ImportReport, OrderSource, RowError
@@ -51,6 +51,15 @@ class SkippedDuplicate:
 
 
 @dataclass(frozen=True)
+class MissingFromFile:
+    """Active order in DB whose delivery_code was absent from the import file."""
+
+    delivery_code: str
+    order_id: int | None
+    status: str
+
+
+@dataclass(frozen=True)
 class ImportOutcome:
     """Structured persist result for the UI (duplicates listed in full)."""
 
@@ -58,6 +67,7 @@ class ImportOutcome:
     skipped: tuple[SkippedDuplicate, ...]
     rejected: tuple[RowError, ...]
     warnings: tuple[str, ...]
+    missing_from_file: tuple[MissingFromFile, ...] = ()
 
     @property
     def skipped_codes(self) -> tuple[str, ...]:
@@ -106,8 +116,9 @@ class ImportOrdersService:
         warnings = list(report.warnings)
         to_save = report.orders
         skipped: list[SkippedDuplicate] = []
+        file_codes = {order.delivery_code for order in report.orders}
+        order_repo = OrderRepository(self._session)
         if to_save:
-            order_repo = OrderRepository(self._session)
             existing_ids = order_repo.existing_delivery_code_ids(
                 [order.delivery_code for order in to_save]
             )
@@ -123,7 +134,7 @@ class ImportOrdersService:
         if to_save:
             coords = LocationCoordsRepository(self._session)
             enriched = _enrich_orders(to_save, coords)
-            OrderRepository(self._session).add_many(enriched)
+            order_repo.add_many(enriched)
             saved_report = ImportReport(
                 orders=enriched,
                 rejected=report.rejected,
@@ -135,11 +146,29 @@ class ImportOrdersService:
                 rejected=report.rejected,
                 warnings=warnings,
             )
+        missing: list[MissingFromFile] = []
+        active_orders = order_repo.list_filtered(exclude_statuses=[OrderStatus.DELIVERED])
+        for order in active_orders:
+            if order.delivery_code in file_codes:
+                continue
+            missing.append(
+                MissingFromFile(
+                    delivery_code=order.delivery_code,
+                    order_id=order.id,
+                    status=order.status.value,
+                )
+            )
+        if missing:
+            warnings.append(
+                f"W pliku brakuje {len(missing)} aktywnych zleceń z bazy "
+                "(kandydat do anulacji — nic nie usunięto automatycznie)."
+            )
         outcome = ImportOutcome(
             accepted_count=saved_report.accepted_count,
             skipped=tuple(skipped),
             rejected=tuple(report.rejected),
             warnings=tuple(warnings),
+            missing_from_file=tuple(missing),
         )
         AuditLogRepository(self._session).record(
             username=username,
@@ -149,6 +178,7 @@ class ImportOrdersService:
                 "accepted": outcome.accepted_count,
                 "rejected": len(outcome.rejected),
                 "skipped": len(outcome.skipped),
+                "missing_from_file": len(outcome.missing_from_file),
                 "warnings": len(outcome.warnings),
             },
         )

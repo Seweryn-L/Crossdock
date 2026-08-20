@@ -27,15 +27,14 @@ def render_ops_focus_dashboard(
     *,
     on_enqueue_staying: Callable[[], Awaitable[Any] | Any],
     open_map: Callable[[], None],
-    on_select_plan: Callable[[int], Awaitable[Any] | Any] | None = None,
     on_complete_routes: Callable[[Sequence[int]], Awaitable[Any] | Any] | None = None,
 ) -> None:
     """Paint the Ops Focus home layout inside an already-open page_frame."""
-    plan_title = snap.plan_label or "Brak planu"
+    plan_title = snap.plan_label or "Brak stanu operacyjnego"
     plan_sub = (
         f"status: {snap.latest_plan_status_pl or '—'}"
         if snap.latest_plan_id is not None
-        else "Wygeneruj pierwszy plan w sekcji Plany."
+        else "Wygeneruj pierwszą propozycję tras w sekcji Operacje."
     )
     if snap.latest_plan_id is None:
         pill = '<span class="cd-ops-pill-muted">Brak danych</span>'
@@ -48,51 +47,24 @@ def render_ops_focus_dashboard(
     import_txt = html.escape(snap.last_import_summary or "Brak danych w audycie.")
     plan_title_e = html.escape(plan_title)
     plan_sub_e = html.escape(plan_sub)
-    select_options = {str(run_id): label for run_id, label in snap.plan_options}
 
     ops_page_header(
         "Pulpit dyspozytora",
-        "Import zleceń, planowanie transportów całopojazdowych, mapa tras, magazyn i raporty.",
+        "Codzienny stan operacyjny: import, Generuj, zatwierdzanie tras, mapa i magazyn.",
     )
 
     with ui.element("div").classes("cd-ops-hero"):
         with ui.row().classes("w-full items-start justify-between flex-wrap gap-4"):
             with ui.column().classes("gap-1").style("min-width:min(100%, 40rem);flex:1;"):
-                ui.label("Aktywny plan").classes("cd-ops-eyebrow")
-                if select_options:
-                    plan_select = (
-                        ui.select(
-                            options=select_options,
-                            value=(
-                                str(snap.latest_plan_id)
-                                if snap.latest_plan_id is not None
-                                else None
-                            ),
-                            label="Plan",
-                        )
-                        .classes("w-full cd-plan-select")
-                        .props("options-dense popup-content-class=cd-plan-select-popup")
-                    )
-
-                    async def _on_plan_change(_e: Any = None) -> None:
-                        raw = plan_select.value
-                        if raw is None or on_select_plan is None:
-                            return
-                        chosen = int(raw)
-                        if chosen == snap.latest_plan_id:
-                            return
-                        await on_select_plan(chosen)
-
-                    plan_select.on_value_change(_on_plan_change)
-                else:
-                    ui.html(f"<h2 class='cd-ops-plan-title'>{plan_title_e}</h2>", sanitize=False)
+                ui.label("Stan operacyjny").classes("cd-ops-eyebrow")
+                ui.html(f"<h2 class='cd-ops-plan-title'>{plan_title_e}</h2>", sanitize=False)
                 ui.html(f"<div class='cd-ops-plan-sub'>{plan_sub_e}</div>", sanitize=False)
             ui.html(pill, sanitize=False)
         with ui.element("div").classes("cd-ops-tri"):
             _status_tile(
                 "Jedzie (trasy)",
                 snap.riding,
-                "trasy gotowe do zatwierdzenia",
+                "trasy gotowe do zatwierdzenia lub już zatwierdzone",
                 "cd-ops-col-ride",
             )
             _status_tile(
@@ -108,7 +80,7 @@ def render_ops_focus_dashboard(
             )
         with ui.row().classes("cd-ops-cta ui-sans"):
             ui.button(
-                "Otwórz plany",
+                "Otwórz operacje",
                 on_click=lambda: ui.navigate.to("/plans"),
             ).props("color=primary no-caps")
             ui.button(
@@ -125,7 +97,7 @@ def render_ops_focus_dashboard(
                 with ui.row().classes("items-center gap-1"):
                     ui.label("Trasy w drodze").classes("cd-wh-card-title")
                     info_hint(
-                        "Zatwierdzone trasy aktywnego planu, które jeszcze nie wróciły. "
+                        "Zatwierdzone trasy bieżącego stanu, które jeszcze nie wróciły. "
                         "Zrealizowane zwalnia auto i oznacza zlecenia jako dostarczone."
                     )
                 enlarge_transit_btn = ui.button("Powiększ", icon="open_in_full").props(
@@ -243,7 +215,7 @@ def render_ops_focus_dashboard(
                     on_click=lambda: ui.navigate.to("/orders"),
                 ).props("flat dense color=primary no-caps")
                 ui.button(
-                    "Plany",
+                    "Operacje",
                     on_click=lambda: ui.navigate.to("/plans"),
                 ).props("flat dense color=primary no-caps")
                 ui.button(

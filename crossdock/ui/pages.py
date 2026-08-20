@@ -1,13 +1,13 @@
-"""Application pages: dashboard, orders, plans, map, reports, warehouse, system, settings.
+"""Application pages: dashboard, orders, operations, map, reports, warehouse, system, settings.
 
-UI texts in Polish.
+UI texts in Polish. Continuous dispatcher ops (Variant A): no plan picker in main flow.
 """
 
 from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from nicegui import app, run, ui
@@ -15,7 +15,7 @@ from nicegui import app, run, ui
 from crossdock.config import effective_planning_date, get_settings
 from crossdock.distance.factory import get_distance_provider
 from crossdock.distance.osrm import OsrmDistanceProvider
-from crossdock.domain.models import Location, Order, Vehicle, VehicleType
+from crossdock.domain.models import Location, Order, OrderStatus, Vehicle, VehicleType
 from crossdock.services.app_settings import (
     editable_settings_snapshot,
     save_runtime_overrides,
@@ -78,7 +78,12 @@ from crossdock.storage.repositories import (
     VehicleRepository,
 )
 from crossdock.ui.labels import (
+    APPROVE_ROUTE_HINT,
+    COMPLETE_ROUTE_HINT,
+    DELETE_RUN_HINT,
+    GENERATE_PROTECT_HINT,
     PLAN_NAME_MAX_LEN,
+    UNLOCK_ROUTE_HINT,
     buffer_action_pl,
     format_plan_label,
     order_status_pl,
@@ -89,6 +94,7 @@ from crossdock.ui.labels import (
 from crossdock.ui.layout import ops_page_header, page_frame
 from crossdock.ui.map_leaflet_js import (
     arrows_javascript,
+    bind_route_overlays_javascript,
     clear_arrows_javascript,
     invalidate_map_javascript,
 )
@@ -139,9 +145,46 @@ def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
     return rows
 
 
-def _load_orders() -> list[Order]:
+def _load_orders(
+    date_preset: str = "7d",
+    status_preset: str = "active",
+    due_from: date | None = None,
+    due_to: date | None = None,
+) -> list[Order]:
     with session_scope() as session:
-        return OrderRepository(session).list_all()
+        exclude: list[OrderStatus] | None = None
+        statuses: list[OrderStatus] | None = None
+        if status_preset == "active":
+            exclude = [OrderStatus.DELIVERED]
+        elif status_preset == "new":
+            statuses = [OrderStatus.NEW]
+        elif status_preset == "planned":
+            statuses = [OrderStatus.PLANNED]
+        elif status_preset == "approved":
+            statuses = [OrderStatus.APPROVED]
+        elif status_preset == "delivered":
+            statuses = [OrderStatus.DELIVERED]
+        # else "all" → no status filter
+
+        today = effective_planning_date()
+        df = due_from
+        dt = due_to
+        if date_preset == "today":
+            df, dt = today, today
+        elif date_preset == "7d":
+            df, dt = today - timedelta(days=7), today + timedelta(days=14)
+        elif date_preset == "30d":
+            df, dt = today - timedelta(days=30), today + timedelta(days=30)
+        elif date_preset == "all":
+            df, dt = None, None
+        # custom keeps due_from / due_to as passed
+
+        return OrderRepository(session).list_filtered(
+            statuses=statuses,
+            exclude_statuses=exclude,
+            due_from=df,
+            due_to=dt,
+        )
 
 
 def _load_order_counts() -> OrderCounts:
@@ -179,6 +222,11 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
             }
             for v in sorted(active_vehicles, key=lambda x: (x.is_busy, x.code))
         ]
+        route_counts = (
+            AssignmentRepository(session).count_routes_by_status(resolved)
+            if resolved is not None
+            else {"proposed": 0, "approved": 0, "completed": 0}
+        )
         return {
             "total_orders": counts.total,
             "new_orders": counts.new_status,
@@ -204,6 +252,9 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
             "plan_options": [(item.run_id, item.label) for item in plans],
             "total_distance_km": run.total_distance_km if run else None,
             "total_cost_eur": run.total_cost_eur if run else None,
+            "route_counts": route_counts,
+            "protected_routes": int(route_counts.get("approved", 0))
+            + int(route_counts.get("completed", 0)),
         }
 
 
@@ -243,19 +294,20 @@ def _open_import_result_dialog(outcome: ImportOutcome) -> None:
         .classes("p-4 gap-3")
         .style("min-width:min(92vw, 52rem);max-width:52rem;max-height:85vh;"),
     ):
-        ui.label("Wynik importu").classes("text-lg font-medium")
+        ui.label("Wynik importu — delta dnia").classes("text-lg font-medium")
         ui.label(
             f"Przyjęto {outcome.accepted_count} · "
             f"pominięto (już w bazie) {len(outcome.skipped)} · "
+            f"brak w pliku {len(outcome.missing_from_file)} · "
             f"błędy wierszy {len(outcome.rejected)}"
         ).classes("text-sm text-gray-700")
         if outcome.warnings:
             for warning in outcome.warnings:
                 ui.label(warning).classes("text-sm text-amber-800")
         if outcome.skipped:
-            ui.label("Już w systemie").classes("font-medium mt-2")
+            ui.label("Już w systemie (bez zmian)").classes("font-medium mt-2")
             with (
-                ui.scroll_area().classes("w-full").style("max-height: 32vh"),
+                ui.scroll_area().classes("w-full").style("max-height: 24vh"),
                 ui.column().classes("w-full gap-0"),
             ):
                 for item in outcome.skipped:
@@ -265,10 +317,24 @@ def _open_import_result_dialog(outcome: ImportOutcome) -> None:
                         else ""
                     )
                     ui.label(f"{item.delivery_code}{oid}").classes("text-sm")
+        if outcome.missing_from_file:
+            ui.label("Brak w pliku (aktywne w bazie — kandydat do anulacji)").classes(
+                "font-medium mt-2"
+            )
+            ui.label("Nic nie usunięto automatycznie.").classes("text-sm text-gray-600")
+            with (
+                ui.scroll_area().classes("w-full").style("max-height: 24vh"),
+                ui.column().classes("w-full gap-0"),
+            ):
+                for item in outcome.missing_from_file[:200]:
+                    oid = f"#{item.order_id}" if item.order_id is not None else "—"
+                    ui.label(
+                        f"{item.delivery_code} · {oid} · {order_status_pl(item.status)}"
+                    ).classes("text-sm")
         if outcome.rejected:
             ui.label("Błędy wierszy").classes("font-medium mt-2")
             with (
-                ui.scroll_area().classes("w-full").style("max-height: 32vh"),
+                ui.scroll_area().classes("w-full").style("max-height: 24vh"),
                 ui.column().classes("w-full gap-0"),
             ):
                 for err in outcome.rejected:
@@ -414,8 +480,7 @@ async def dashboard_page() -> None:
         username = app.storage.user.get("username", "unknown")
 
         async def refresh_dashboard() -> None:
-            preferred = _active_run_id_from_storage()
-            snap = await run.io_bound(_load_dashboard, preferred)
+            snap = await run.io_bound(_load_dashboard, None)
             _set_active_run_id(snap.latest_plan_id)
 
             async def on_enqueue_staying() -> None:
@@ -432,21 +497,12 @@ async def dashboard_page() -> None:
                 )
 
             def open_map() -> None:
-                if snap.latest_plan_id is None:
-                    ui.navigate.to("/map")
-                else:
-                    ui.navigate.to(f"/map?run_id={snap.latest_plan_id}")
-
-            async def on_select_plan(run_id: int) -> None:
-                if run_id == snap.latest_plan_id:
-                    return
-                _set_active_run_id(run_id)
-                await refresh_dashboard()
+                ui.navigate.to("/map")
 
             async def on_complete_routes(vehicle_ids: list[int]) -> None:
                 run_id = snap.latest_plan_id
                 if run_id is None:
-                    ui.notify("Brak aktywnego planu.", type="warning")
+                    ui.notify("Brak stanu operacyjnego.", type="warning")
                     return
                 results: list[tuple[int, int, str]] = []
                 errors: list[str] = []
@@ -468,7 +524,8 @@ async def dashboard_page() -> None:
                 if len(results) == 1:
                     rid, n_orders, code = results[0]
                     ui.notify(
-                        f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
+                        f"Zrealizowano trasę {code} (generacja #{rid}, {n_orders} zleceń). "
+                        "Auto wolne.",
                         type="positive",
                     )
                 else:
@@ -495,7 +552,6 @@ async def dashboard_page() -> None:
                     snap,
                     on_enqueue_staying=on_enqueue_staying,
                     open_map=open_map,
-                    on_select_plan=on_select_plan,
                     on_complete_routes=on_complete_routes,
                 )
 
@@ -509,15 +565,17 @@ async def orders_page() -> None:
     with page_frame("Zlecenia"):
         ops_page_header(
             "Zlecenia",
-            "Import z Excela i przegląd zleceń.",
+            "Codzienny import z Excela i przegląd aktywnych zleceń (filtry ukrywają historię).",
         )
         session_import = app.storage.user.get("last_import")
         if isinstance(session_import, dict):
             tone = "cd-ops-hero" if int(session_import.get("rejected", 0)) == 0 else "cd-ops-panel"
             with ui.element("div").classes(f"w-full {tone}"):
+                missing_n = int(session_import.get("missing", 0) or 0)
                 ui.label(
                     f"Ostatni import (sesja): przyjęto {session_import.get('accepted', 0)}, "
                     f"pominięto {session_import.get('skipped', 0)}, "
+                    f"brak w pliku {missing_n}, "
                     f"odrzucono {session_import.get('rejected', 0)} "
                     f"({session_import.get('at', '')})."
                 ).classes("text-sm text-gray-700")
@@ -527,8 +585,61 @@ async def orders_page() -> None:
                 with ui.element("div").classes("w-full cd-ops-hero"):
                     ui.label(f"Ostatni import: {last_import}").classes("text-sm text-gray-700")
 
+        filter_state: dict[str, object] = {
+            "date_preset": str(app.storage.user.get("orders_date_preset") or "7d"),
+            "status_preset": str(app.storage.user.get("orders_status_preset") or "active"),
+            "due_from": None,
+            "due_to": None,
+        }
+
         with ui.element("div").classes("cd-ops-panel w-full gap-3"):
             status_label = ui.label("").classes("text-sm text-gray-700 font-medium")
+            with ui.row().classes("cd-toolbar w-full items-end"):
+                date_select = (
+                    ui.select(
+                        options={
+                            "today": "Dziś (termin)",
+                            "7d": "Ostatnie 7 dni ± lead",
+                            "30d": "Około miesiąca",
+                            "all": "Cała historia (termin)",
+                            "custom": "Własny zakres",
+                        },
+                        value=str(filter_state["date_preset"]),
+                        label="Zakres terminu",
+                    )
+                    .classes("w-56")
+                    .props("options-dense")
+                )
+                status_select = (
+                    ui.select(
+                        options={
+                            "active": "Aktywne (bez zrealizowanych)",
+                            "all": "Wszystkie statusy",
+                            "new": "Nowe",
+                            "planned": "Zaplanowane",
+                            "approved": "Zatwierdzone",
+                            "delivered": "Zrealizowane",
+                        },
+                        value=str(filter_state["status_preset"]),
+                        label="Status",
+                    )
+                    .classes("w-56")
+                    .props("options-dense")
+                )
+                custom_from = (
+                    ui.input("Od", value="").props("type=date").classes("w-40").classes("hidden")
+                )
+                custom_to = (
+                    ui.input("Do", value="").props("type=date").classes("w-40").classes("hidden")
+                )
+
+                def _sync_custom_visibility() -> None:
+                    show = date_select.value == "custom"
+                    custom_from.set_visibility(show)
+                    custom_to.set_visibility(show)
+
+                date_select.on_value_change(lambda _e: _sync_custom_visibility())
+                _sync_custom_visibility()
 
             with ui.row().classes("cd-toolbar w-full"):
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
@@ -543,10 +654,9 @@ async def orders_page() -> None:
                 )
                 pallets_btn.disable()
                 info_hint(
-                    "Gdy baza jest pusta, zaimportuj plik Excel, aby rozpocząć planowanie. "
-                    "Zlecenia o istniejącym kodzie dostawy są pomijane. Usuń zaznaczone w tabeli. "
-                    "Zmień palety: dostępne po zatwierdzeniu planu; "
-                    "zaznacz jedno zlecenie zatwierdzone."
+                    "Domyślnie widać aktywne zlecenia w oknie terminów. "
+                    "Zlecenia o istniejącym kodzie dostawy są pomijane przy imporcie. "
+                    "Zmień palety: tylko zatwierdzone, jedno zaznaczenie."
                 )
                 upload = (
                     ui.upload(
@@ -564,7 +674,7 @@ async def orders_page() -> None:
                 ).props("color=primary")
                 info_hint(
                     "Importuj raport Excel z TMS (nagłówek w trzecim wierszu arkusza). "
-                    "Kolumny mapuje konfiguracja importu."
+                    "Po imporcie zobaczysz deltę: nowe / już w bazie / brak w pliku."
                 )
                 enlarge_orders_btn = ui.button("Powiększ", icon="open_in_full").props(
                     "flat dense no-caps"
@@ -619,9 +729,9 @@ async def orders_page() -> None:
             else:
                 pallets_btn.disable()
 
-        async def sync_toolbar(counts: OrderCounts) -> None:
+        async def sync_toolbar(counts: OrderCounts, shown: int) -> None:
             status_label.set_text(
-                f"Zlecenia w bazie: {counts.total} "
+                f"Widoczne: {shown} · w bazie: {counts.total} "
                 f"(status „nowe”: {counts.new_status}, z wagą: {counts.new_with_weight})"
             )
             if counts.total == 0:
@@ -630,12 +740,32 @@ async def orders_page() -> None:
                 delete_all_btn.enable()
             await sync_pallets_button()
 
+        def _parse_custom_dates() -> tuple[date | None, date | None]:
+            raw_from = str(custom_from.value or "").strip()
+            raw_to = str(custom_to.value or "").strip()
+            df = date.fromisoformat(raw_from) if raw_from else None
+            dt = date.fromisoformat(raw_to) if raw_to else None
+            return df, dt
+
         async def refresh_grid() -> None:
-            orders = await run.io_bound(_load_orders)
+            filter_state["date_preset"] = str(date_select.value or "7d")
+            filter_state["status_preset"] = str(status_select.value or "active")
+            app.storage.user["orders_date_preset"] = filter_state["date_preset"]
+            app.storage.user["orders_status_preset"] = filter_state["status_preset"]
+            df, dt = (None, None)
+            if filter_state["date_preset"] == "custom":
+                df, dt = _parse_custom_dates()
+            orders = await run.io_bound(
+                _load_orders,
+                str(filter_state["date_preset"]),
+                str(filter_state["status_preset"]),
+                df,
+                dt,
+            )
             counts = await run.io_bound(_load_order_counts)
             grid.options["rowData"] = _orders_to_grid_rows(orders)
             grid.update()
-            await sync_toolbar(counts)
+            await sync_toolbar(counts, len(orders))
 
         async def handle_upload(e: ui.events.UploadEventArguments) -> None:
             settings = get_settings()
@@ -661,18 +791,23 @@ async def orders_page() -> None:
             outcome = await run.io_bound(_write_and_import)
             skipped_n = len(outcome.skipped)
             rejected_n = len(outcome.rejected)
+            missing_n = len(outcome.missing_from_file)
             app.storage.user["last_import"] = {
                 "accepted": outcome.accepted_count,
                 "rejected": rejected_n,
                 "skipped": skipped_n,
+                "missing": missing_n,
                 "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
-            toast_type = "positive" if rejected_n == 0 and skipped_n == 0 else "warning"
+            toast_type = (
+                "positive" if rejected_n == 0 and skipped_n == 0 and missing_n == 0 else "warning"
+            )
             ui.notify(
-                f"Przyjęto {outcome.accepted_count}, pominięto {skipped_n}, błędy {rejected_n}",
+                f"Przyjęto {outcome.accepted_count}, pominięto {skipped_n}, "
+                f"brak w pliku {missing_n}, błędy {rejected_n}",
                 type=toast_type,
             )
-            if skipped_n > 0 or rejected_n > 0 or outcome.warnings:
+            if skipped_n > 0 or rejected_n > 0 or missing_n > 0 or outcome.warnings:
                 _open_import_result_dialog(outcome)
             await refresh_grid()
 
@@ -756,6 +891,10 @@ async def orders_page() -> None:
             dialog.open()
 
         refresh_btn.on_click(refresh_grid)
+        date_select.on_value_change(lambda _e: refresh_grid())
+        status_select.on_value_change(lambda _e: refresh_grid())
+        custom_from.on_value_change(lambda _e: refresh_grid())
+        custom_to.on_value_change(lambda _e: refresh_grid())
         delete_selected_btn.on_click(on_delete_selected)
         delete_all_btn.on_click(on_delete_all)
         pallets_btn.on_click(on_edit_pallets)
@@ -767,18 +906,16 @@ async def orders_page() -> None:
 async def plans_page() -> None:
     username = app.storage.user.get("username", "unknown")
     settings = get_settings()
-    with page_frame("Plany"):
+    with page_frame("Operacje"):
         ops_page_header(
-            "Plany FTL",
-            "FTL (full truckload) — transporty całopojazdowe. "
-            "Pełne auta wyjeżdżają, słabe czekają na dopełnienie. "
-            "Wyjazd ok. 2 dni przed terminem u odbiorcy. "
+            "Operacje dnia",
+            "Bieżący stan: Generuj → zatwierdź pełne trasy → realizacja. "
+            "Zatwierdzone i zrealizowane trasy są chronione przy kolejnym Generuj. "
             f"Maks. {settings.max_drops_per_route} punktów rozładunku / trasę · "
-            f"{settings.cost_per_km:.2f} €/km. "
-            "Zatwierdzaj pełne trasy — słabe zostają w magazynie na kolejny dzień.",
+            f"{settings.cost_per_km:.2f} €/km.",
         )
 
-        ctx = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
+        ctx = await run.io_bound(_load_planning_context, None)
         active_id = ctx.get("latest_run_id")
         _set_active_run_id(int(active_id) if isinstance(active_id, int) else None)
         staying_ids: list[int] = []
@@ -798,9 +935,9 @@ async def plans_page() -> None:
             _, chip_eligible = _plan_chip("Do planowania")
             _, chip_free = _plan_chip("Wolne pojazdy")
             _, chip_busy = _plan_chip("Zajęte")
-            plan_wrap, chip_plan = _plan_chip("Plan")
+            plan_wrap, chip_plan = _plan_chip("Stan")
             empty_wrap, chip_empty = _plan_chip("", muted=True)
-            chip_empty.set_text("Brak planu — wygeneruj plan po imporcie zleceń.")
+            chip_empty.set_text("Brak stanu — wygeneruj po imporcie zleceń.")
             riding_wrap, chip_riding = _plan_chip("Jedzie")
             staying_wrap, chip_staying = _plan_chip("Zostaje")
             attention_wrap, chip_attention = _plan_chip("Wymaga uwagi")
@@ -814,33 +951,56 @@ async def plans_page() -> None:
             cost_wrap.set_visibility(False)
 
         with ui.element("div").classes("cd-ops-panel w-full"):
-            with ui.row().classes("cd-toolbar w-full"):
-                plan_select = (
-                    ui.select(
-                        options={},
-                        value=None,
-                        label="Plan",
-                    )
-                    .classes("cd-plan-select")
-                    .props("options-dense popup-content-class=cd-plan-select-popup")
-                )
-                rename_btn = ui.button("Nazwa", icon="edit").props("outline")
-                new_plan_btn = ui.button("Nowy plan", icon="note_add").props("outline")
+            with ui.row().classes("cd-toolbar w-full items-center"):
                 refresh_btn = ui.button("Odśwież", icon="refresh").props("outline")
-                generate_btn = ui.button("Generuj plan", icon="auto_awesome").props("color=primary")
+                generate_btn = ui.button("Generuj", icon="auto_awesome").props("color=primary")
+                info_hint(GENERATE_PROTECT_HINT)
                 approve_btn = ui.button("Zatwierdź pełne trasy", icon="done_all").props(
                     "color=positive"
                 )
+                info_hint(APPROVE_ROUTE_HINT)
                 approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
                     "color=positive outline"
                 )
                 complete_route_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
+                info_hint(COMPLETE_ROUTE_HINT)
                 unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
-                unlock_btn = ui.button("Odblokuj cały plan", icon="restart_alt").props("outline")
-                delete_plan_btn = ui.button("Usuń plan", icon="delete").props(
-                    "outline color=negative"
-                )
+                info_hint(UNLOCK_ROUTE_HINT)
+                unlock_btn = ui.button("Odblokuj zatwierdzone", icon="restart_alt").props("outline")
                 map_btn = ui.button("Pokaż na mapie", icon="map").props("outline")
+                advanced_btn = ui.button("Zaawansowane", icon="tune").props("outline dense")
+
+            advanced_panel = ui.element("div").classes("w-full")
+            advanced_panel.set_visibility(False)
+            with advanced_panel:
+                with ui.row().classes("cd-toolbar w-full items-end"):
+                    plan_select = (
+                        ui.select(
+                            options={},
+                            value=None,
+                            label="Generacja (historia)",
+                        )
+                        .classes("cd-plan-select")
+                        .props("options-dense popup-content-class=cd-plan-select-popup")
+                    )
+                    rename_btn = ui.button("Nazwa", icon="edit").props("outline")
+                    new_plan_btn = ui.button("Nowa pusta generacja", icon="note_add").props(
+                        "outline"
+                    )
+                    delete_plan_btn = ui.button("Usuń generację", icon="delete").props(
+                        "outline color=negative"
+                    )
+                    info_hint(DELETE_RUN_HINT)
+                ui.label(
+                    "Zaawansowane: podgląd starej generacji, nazwa, pusta generacja, usuwanie. "
+                    "W codziennej pracy nie jest to potrzebne — historia jest też w Raportach."
+                ).classes("text-sm text-gray-600")
+
+            def _toggle_advanced() -> None:
+                advanced_panel.set_visibility(not advanced_panel.visible)
+
+            advanced_btn.on_click(_toggle_advanced)
+
             sim_day = effective_planning_date(settings)
             with ui.row().classes("cd-toolbar w-full items-end"):
                 planning_date_in = (
@@ -882,7 +1042,8 @@ async def plans_page() -> None:
             warn_box = ui.column().classes("w-full gap-1")
             gen_dialog = ui.dialog().props("persistent")
             with gen_dialog, ui.card().classes("w-[28rem] p-4 gap-3"):
-                ui.label("Generowanie planu FTL").classes("text-lg font-medium")
+                ui.label("Generowanie tras FTL").classes("text-lg font-medium")
+                ui.label(GENERATE_PROTECT_HINT).classes("text-sm text-gray-600")
                 gen_progress = ui.linear_progress(value=0, show_value=False).props(
                     "instant-feedback size=20px color=primary"
                 )
@@ -1217,7 +1378,7 @@ async def plans_page() -> None:
             else:
                 empty_wrap.set_visibility(False)
                 plan_wrap.set_visibility(True)
-                chip_plan.set_text(str(ctx_now.get("plan_label") or f"Plan #{run_id}"))
+                chip_plan.set_text(str(ctx_now.get("plan_label") or f"Generacja #{run_id}"))
             plan_status = ctx_now.get("plan_status")
             options = {
                 str(item[0]): str(item[1])
@@ -1381,6 +1542,7 @@ async def plans_page() -> None:
                     type="warning",
                 )
                 return
+            protected_before = int(ctx_now.get("protected_routes") or 0)
             warn_box.clear()
             result_label.set_visibility(False)
             generate_btn.disable()
@@ -1423,7 +1585,7 @@ async def plans_page() -> None:
                 if float(gen_progress.value or 0) < 0.9:
                     gen_progress.set_value(0.9)
                 gen_progress.set_value(0.95)
-                gen_stage.set_text("Zapis planu")
+                gen_stage.set_text("Zapis stanu")
                 (
                     run_id,
                     _status,
@@ -1448,16 +1610,22 @@ async def plans_page() -> None:
                 return
             _set_active_run_id(run_id)
             await refresh_plan_view()
-            result_label.set_text(
-                f"Plan #{run_id} · jedzie={planned} · "
-                f"zostaje={unassigned} · wymaga uwagi={unrouted}"
+            ctx_after = await run.io_bound(_load_planning_context, run_id)
+            protected_after = int(ctx_after.get("protected_routes") or 0)
+            proposed_n = int((ctx_after.get("route_counts") or {}).get("proposed", 0))  # type: ignore[union-attr]
+            summary = (
+                f"Generacja #{run_id}: zatwierdzone/zrealizowane bez zmian={protected_after} "
+                f"(przed: {protected_before}) · nowe propozycje={proposed_n} · "
+                f"jedzie={planned} · zostaje={unassigned} · wymaga uwagi={unrouted}"
             )
+            result_label.set_text(summary)
             result_label.set_visibility(True)
             with warn_box:
                 for msg in warnings[:30]:
                     ui.label(msg).classes("text-sm text-amber-800")
             ui.notify(
-                f"Plan #{run_id}: jedzie {planned}, zostaje {unassigned}, wymaga uwagi {unrouted}.",
+                f"Generacja #{run_id}: chronione {protected_after}, "
+                f"propozycje {proposed_n}, jedzie {planned}, zostaje {unassigned}.",
                 type="positive" if unassigned == 0 and unrouted == 0 else "warning",
             )
 
@@ -1473,7 +1641,7 @@ async def plans_page() -> None:
         async def on_approve_route() -> None:
             run_id = ctx.get("latest_run_id")
             if run_id is None:
-                ui.notify("Brak planu.", type="warning")
+                ui.notify("Brak stanu operacyjnego.", type="warning")
                 return
             vehicle_ids = await _selected_route_vehicle_ids()
             if not vehicle_ids:
@@ -1496,7 +1664,7 @@ async def plans_page() -> None:
             if len(results) == 1:
                 rid, n_orders, code = results[0]
                 ui.notify(
-                    f"Zatwierdzono trasę {code} (plan #{rid}, {n_orders} zleceń).",
+                    f"Zatwierdzono trasę {code} (generacja #{rid}, {n_orders} zleceń).",
                     type="positive",
                 )
             else:
@@ -1539,7 +1707,8 @@ async def plans_page() -> None:
             if len(results) == 1:
                 rid, n_orders, code = results[0]
                 ui.notify(
-                    f"Odblokowano trasę {code} (plan #{rid}, {n_orders} zleceń wróciło do puli).",
+                    f"Odblokowano trasę {code} (generacja #{rid}, "
+                    f"{n_orders} zleceń wróciło do puli).",
                     type="info",
                 )
             else:
@@ -1583,7 +1752,7 @@ async def plans_page() -> None:
             if len(results) == 1:
                 rid, n_orders, code = results[0]
                 ui.notify(
-                    f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
+                    f"Zrealizowano trasę {code} (generacja #{rid}, {n_orders} zleceń). Auto wolne.",
                     type="positive",
                 )
             else:
@@ -1619,7 +1788,7 @@ async def plans_page() -> None:
                 return
             await refresh_plan_view()
             ui.notify(
-                f"Zatwierdzono pełne trasy w planie #{approved_run}: {count} zleceń.",
+                f"Zatwierdzono pełne trasy w generacji #{approved_run}: {count} zleceń.",
                 type="positive",
             )
 
@@ -1641,7 +1810,7 @@ async def plans_page() -> None:
                 return
             await refresh_plan_view()
             ui.notify(
-                f"Odblokowano plan #{unlocked_run}: {count} zleceń → nowe.",
+                f"Odblokowano generację #{unlocked_run}: {count} zleceń → nowe.",
                 type="positive",
             )
 
@@ -1649,11 +1818,11 @@ async def plans_page() -> None:
             ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None:
-                ui.notify("Brak planu do usunięcia.", type="warning")
+                ui.notify("Brak generacji do usunięcia.", type="warning")
                 return
             with ui.dialog() as dialog, ui.card().classes("p-4 gap-3"):
                 ui.label(
-                    f"Usunąć plan #{run_id}? Zlecenia z trasy wrócą do statusu „nowe”."
+                    f"Usunąć generację #{run_id}? Zlecenia z trasy wrócą do statusu „nowe”."
                 ).classes("font-medium")
                 with ui.row().classes("gap-2 justify-end w-full"):
                     ui.button("Anuluj", on_click=dialog.close).props("flat")
@@ -1673,18 +1842,18 @@ async def plans_page() -> None:
                         _set_active_run_id(remaining)
                         await refresh_plan_view()
                         ui.notify(
-                            f"Usunięto plan #{deleted_run}: {count} zleceń → nowe.",
+                            f"Usunięto generację #{deleted_run}: {count} zleceń → nowe.",
                             type="positive",
                         )
 
-                    ui.button("Usuń plan", on_click=confirm).props("color=negative")
+                    ui.button("Usuń generację", on_click=confirm).props("color=negative")
             dialog.open()
 
         async def on_show_map() -> None:
             ctx_now = await run.io_bound(_load_planning_context, _active_run_id_from_storage())
             run_id = ctx_now.get("latest_run_id")
             if run_id is None:
-                ui.notify("Brak planu do wyświetlenia na mapie.", type="warning")
+                ui.notify("Brak stanu do wyświetlenia na mapie.", type="warning")
                 return
             ui.navigate.to(f"/map?run_id={int(run_id)}")  # type: ignore[arg-type]
 
@@ -1703,11 +1872,11 @@ async def plans_page() -> None:
         async def on_rename_plan() -> None:
             run_id = ctx.get("latest_run_id")
             if run_id is None:
-                ui.notify("Brak planu do nazwania.", type="warning")
+                ui.notify("Brak generacji do nazwania.", type="warning")
                 return
             current = str(ctx.get("display_name") or "")
             with ui.dialog() as dialog, ui.card().classes("p-4 gap-3 min-w-[320px]"):
-                ui.label("Nazwa planu").classes("font-medium")
+                ui.label("Nazwa generacji").classes("font-medium")
                 name_in = ui.input(value=current).props(f"maxlength={PLAN_NAME_MAX_LEN}")
                 name_in.classes("w-full")
 
@@ -1724,7 +1893,7 @@ async def plans_page() -> None:
                         return
                     dialog.close()
                     ui.notify(
-                        f"Zapisano nazwę: {stored}" if stored else "Usunięto nazwę planu.",
+                        f"Zapisano nazwę: {stored}" if stored else "Usunięto nazwę generacji.",
                         type="positive",
                     )
                     await refresh_plan_view()
@@ -1742,7 +1911,7 @@ async def plans_page() -> None:
                 return
             _set_active_run_id(new_id)
             await refresh_plan_view()
-            ui.notify(f"Utworzono nowy plan #{new_id}.", type="positive")
+            ui.notify(f"Utworzono pustą generację #{new_id}.", type="positive")
 
         plan_select.on_value_change(on_plan_select)
         rename_btn.on_click(on_rename_plan)
@@ -1791,9 +1960,43 @@ def _load_map_page_bundle(
         if require_exact:
             view = service.build_for_run(run_id) if run_id is not None else None
         else:
-            resolved = PlanningService(session).resolve_run_id(run_id)
-            view = service.build_for_run(resolved) if resolved is not None else None
+            resolved = (
+                run_id
+                if run_id is not None
+                else PlanningService(session).resolve_operational_run_id()
+            )
+            view = None if resolved is None else service.build_for_run(resolved)
         return options, view
+
+
+def _load_generation_history(limit: int = 30) -> list[dict[str, object]]:
+    with session_scope() as session:
+        rows = AssignmentRepository(session).list_recent_runs(limit=limit)
+        out: list[dict[str, object]] = []
+        for row in rows:
+            out.append(
+                {
+                    "run_id": row.id,
+                    "label": format_plan_label(
+                        run_id=row.id,
+                        display_name=row.display_name,
+                        plan_status=row.plan_status,
+                        created_at=row.created_at,
+                    ),
+                    "username": row.username or "—",
+                    "status_pl": plan_status_pl(row.plan_status),
+                    "km": round(row.total_distance_km, 1)
+                    if row.total_distance_km is not None
+                    else None,
+                    "cost": round(row.total_cost_eur, 2)
+                    if row.total_cost_eur is not None
+                    else None,
+                    "created": row.created_at.strftime("%d.%m.%Y %H:%M")
+                    if row.created_at is not None
+                    else "—",
+                }
+            )
+        return out
 
 
 def _map_route_arrows(route: VehicleMapRoute) -> list[dict[str, float | str]]:
@@ -1825,42 +2028,19 @@ async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
         ops_page_header(
             "Mapa",
-            "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku "
-            "(po drogach, gdy włączono OSRM); strzałki pokazują kierunek jazdy. "
-            "Legenda otwiera się przyciskiem — nie zabiera miejsca mapie.",
+            "Bieżący stan operacyjny. Hover na trasie = skrót; klik = szczegóły. "
+            "Linie łączą magazyn z punktami rozładunku "
+            "(po drogach, gdy włączono OSRM).",
         )
+        # Explicit run_id only from Historia (Raporty); otherwise always latest.
         chosen_explicit = run_id is not None
-        chosen = run_id if chosen_explicit else _active_run_id_from_storage()
-        plan_options, view = await run.io_bound(_load_map_page_bundle, chosen, chosen_explicit)
+        chosen = run_id if chosen_explicit else None
+        _plan_options, view = await run.io_bound(_load_map_page_bundle, chosen, chosen_explicit)
         if view is None:
             with ui.element("div").classes("cd-ops-panel w-full"):
-                ui.label("Brak planu do wyświetlenia.").classes("font-bold text-lg")
-                ui.label("Wygeneruj plan na stronie Plany, potem wróć tutaj.").classes(
-                    "text-gray-600"
-                )
-                if plan_options:
-                    with ui.row().classes("cd-toolbar w-full items-end"):
-                        empty_select = (
-                            ui.select(
-                                options=plan_options,
-                                value=None,
-                                label="Plan",
-                            )
-                            .classes("cd-plan-select")
-                            .props("options-dense popup-content-class=cd-plan-select-popup")
-                        )
-
-                        def _open_selected() -> None:
-                            raw = empty_select.value
-                            if raw is None or str(raw) not in plan_options:
-                                ui.notify("Wybierz plan.", type="warning")
-                                return
-                            rid = int(str(raw))
-                            _set_active_run_id(rid)
-                            ui.navigate.to(f"/map?run_id={rid}")
-
-                        ui.button("Pokaż", on_click=_open_selected).props("color=primary")
-                ui.button("Przejdź do Planów", on_click=lambda: ui.navigate.to("/plans"))
+                ui.label("Brak tras do wyświetlenia.").classes("font-bold text-lg")
+                ui.label("Wygeneruj w Operacjach, potem wróć tutaj.").classes("text-gray-600")
+                ui.button("Przejdź do Operacji", on_click=lambda: ui.navigate.to("/plans"))
             return
 
         _set_active_run_id(view.run_id)
@@ -1900,7 +2080,10 @@ async def map_page(run_id: int | None = None) -> None:
             app.storage.user["map_isolated"] = state["isolated"]
             app.storage.user["map_hidden"] = list(state["hidden"])  # type: ignore[arg-type]
             app.storage.user["map_show_arrows"] = state["show_arrows"]
-            ui.navigate.to(f"/map?run_id={view.run_id}")
+            if chosen_explicit:
+                ui.navigate.to(f"/map?run_id={view.run_id}")
+            else:
+                ui.navigate.to("/map")
 
         def _sync_legend_rows() -> None:
             isolated = state["isolated"]
@@ -1990,15 +2173,6 @@ async def map_page(run_id: int | None = None) -> None:
 
         with ui.element("div").classes("cd-ops-panel w-full"):
             with ui.row().classes("cd-toolbar w-full items-end"):
-                plan_select = (
-                    ui.select(
-                        options=plan_options,
-                        value=str(view.run_id),
-                        label="Plan",
-                    )
-                    .classes("cd-plan-select")
-                    .props("options-dense popup-content-class=cd-plan-select-popup")
-                )
                 status_select = (
                     ui.select(
                         options=status_options,
@@ -2009,18 +2183,6 @@ async def map_page(run_id: int | None = None) -> None:
                     .props("options-dense")
                 )
                 arrows_cb = ui.checkbox("Strzałki", value=show_arrows)
-
-                def on_plan_change(_e=None) -> None:
-                    if suppress_events["v"]:
-                        return
-                    raw = plan_select.value
-                    if raw is None or str(raw) not in plan_options:
-                        return
-                    rid = int(str(raw))
-                    if rid == view.run_id:
-                        return
-                    _set_active_run_id(rid)
-                    ui.navigate.to(f"/map?run_id={rid}")
 
                 def on_status_change(_e=None) -> None:
                     if suppress_events["v"]:
@@ -2052,7 +2214,6 @@ async def map_page(run_id: int | None = None) -> None:
                     else:
                         ui.run_javascript(clear_arrows_javascript(mid))
 
-                plan_select.on_value_change(on_plan_change)
                 status_select.on_value_change(on_status_change)
                 arrows_cb.on_value_change(on_arrows_change)
 
@@ -2060,7 +2221,9 @@ async def map_page(run_id: int | None = None) -> None:
                 ui.button(
                     "Odśwież",
                     icon="refresh",
-                    on_click=lambda: ui.navigate.to(f"/map?run_id={view.run_id}"),
+                    on_click=lambda: ui.navigate.to(
+                        f"/map?run_id={view.run_id}" if chosen_explicit else "/map"
+                    ),
                 ).props("outline")
                 fit_btn = ui.button("Dopasuj", icon="fit_screen").props("outline")
                 enlarge_btn = ui.button("Powiększ", icon="open_in_full").props("flat dense no-caps")
@@ -2080,6 +2243,8 @@ async def map_page(run_id: int | None = None) -> None:
             meta += f" · pojazdów: {len(view.routes)}"
             if len(visible_routes) != len(view.routes):
                 meta += f" · widocznych: {len(visible_routes)}"
+            if chosen_explicit:
+                meta += " · podgląd historyczny"
             ui.label(meta).classes("font-medium")
             if view.warnings:
                 with ui.column().classes("w-full gap-0"):
@@ -2101,6 +2266,7 @@ async def map_page(run_id: int | None = None) -> None:
         )
         route_markers: list[tuple[object, str]] = []
         all_arrows: list[dict[str, float | str]] = []
+        overlay_payload: list[dict[str, object]] = []
         for route in visible_routes:
             approved = route.route_status == "approved"
             isolated_here = state["isolated"] == route.vehicle_code
@@ -2117,6 +2283,14 @@ async def map_page(run_id: int | None = None) -> None:
                         "dashArray": None if approved else "8 8",
                     },
                 ],
+            )
+            overlay_payload.append(
+                {
+                    "polyline": [list(pt) for pt in route.polyline],
+                    "color": route.color,
+                    "tooltip_html": route.tooltip_html,
+                    "detail_html": route.detail_html,
+                }
             )
             if state["show_arrows"]:
                 all_arrows.extend(_map_route_arrows(route))
@@ -2164,6 +2338,8 @@ async def map_page(run_id: int | None = None) -> None:
         depot_marker.run_method("bindPopup", view.depot.popup_html)
         for mk, html in route_markers:
             mk.run_method("bindPopup", html)  # type: ignore[attr-defined]
+        if overlay_payload:
+            ui.run_javascript(bind_route_overlays_javascript(m.id, overlay_payload))
         if all_arrows:
             ui.run_javascript(arrows_javascript(m.id, all_arrows))
         _fit_bounds()
@@ -2175,11 +2351,10 @@ async def reports_page() -> None:
     with page_frame("Raporty"):
         ops_page_header(
             "Raporty",
-            "Zapełnienie wagowe pojazdów oraz oszczędności względem "
-            "scenariusza 1 zlecenie = 1 pojazd. Stawka za km z ustawień.",
+            "Efektywność bieżącego stanu oraz historia generacji (audyt). Stawka za km z ustawień.",
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
-            ui.label("Efektywność planu").classes("font-bold")
+            ui.label("Efektywność bieżącego stanu").classes("font-bold")
 
         summary = ui.label("").classes("text-sm")
         reports_host = ui.element("div").classes("cd-grid-host")
@@ -2203,10 +2378,75 @@ async def reports_page() -> None:
                 .style("height: 280px")
             )
 
+        with ui.element("div").classes("cd-ops-panel w-full gap-2"):
+            ui.label("Historia generacji").classes("font-medium")
+            ui.label(
+                "Audyt uruchomień solvera. Podgląd na mapie nie zmienia bieżącego stanu "
+                "operacyjnego w Operacjach."
+            ).classes("text-sm text-gray-600")
+            history_host = ui.element("div").classes("cd-grid-host")
+            with history_host:
+                history_grid = (
+                    ui.aggrid(
+                        {
+                            "columnDefs": [
+                                {"headerName": "ID", "field": "run_id", "width": 70},
+                                {"headerName": "Etykieta", "field": "label", "flex": 1},
+                                {"headerName": "Status", "field": "status_pl", "width": 140},
+                                {"headerName": "Użytkownik", "field": "username", "width": 120},
+                                {"headerName": "Utworzono", "field": "created", "width": 140},
+                                {"headerName": "Km", "field": "km", "width": 90},
+                                {"headerName": "Koszt €", "field": "cost", "width": 100},
+                            ],
+                            "rowData": [],
+                            "rowSelection": "single",
+                            "domLayout": "normal",
+                        }
+                    )
+                    .classes("w-full")
+                    .style("height: 220px")
+                )
+
+            async def open_history_map() -> None:
+                rows = await history_grid.get_selected_rows()
+                if not rows:
+                    ui.notify("Zaznacz generację w historii.", type="warning")
+                    return
+                rid = int(rows[0]["run_id"])
+                ui.navigate.to(f"/map?run_id={rid}")
+
+            async def open_history_report() -> None:
+                rows = await history_grid.get_selected_rows()
+                if not rows:
+                    ui.notify("Zaznacz generację w historii.", type="warning")
+                    return
+                rid = int(rows[0]["run_id"])
+                _set_active_run_id(rid)
+                await refresh_report()
+                ui.notify(f"Raport dla generacji #{rid}.", type="info")
+
+            with ui.row().classes("cd-toolbar"):
+                ui.button("Podgląd na mapie", icon="map", on_click=open_history_map).props(
+                    "outline"
+                )
+                ui.button(
+                    "Pokaż efektywność", icon="assessment", on_click=open_history_report
+                ).props("outline")
+                enlarge_grid_button(
+                    history_grid,
+                    history_host,
+                    title="Historia generacji",
+                    compact_height="220px",
+                )
+
         async def refresh_report() -> None:
-            bundle = await run.io_bound(_load_report, _active_run_id_from_storage())
+            preferred = _active_run_id_from_storage()
+            bundle = await run.io_bound(_load_report, preferred)
+            history = await run.io_bound(_load_generation_history, 30)
+            history_grid.options["rowData"] = history
+            history_grid.update()
             if bundle is None:
-                summary.set_text("Brak planu do raportu.")
+                summary.set_text("Brak generacji do raportu.")
                 util_grid.options["rowData"] = []
                 util_grid.update()
                 return
@@ -2278,7 +2518,8 @@ async def warehouse_page() -> None:
         ops_page_header(
             "Magazyn",
             "Stan zapełnienia, odliczanie do wyjazdu i bufor. "
-            "Zlecenia trafiają od razu do dalszej obsługi według planu i priorytetów biznesowych.",
+            "Zlecenia trafiają od razu do dalszej obsługi według stanu operacyjnego "
+            "i priorytetów biznesowych.",
         )
 
         with ui.element("div").classes("cd-wh-card w-full"):
@@ -2638,7 +2879,7 @@ async def warehouse_page() -> None:
             if len(results) == 1:
                 rid, n_orders, code = results[0]
                 ui.notify(
-                    f"Zrealizowano trasę {code} (plan #{rid}, {n_orders} zleceń). Auto wolne.",
+                    f"Zrealizowano trasę {code} (generacja #{rid}, {n_orders} zleceń). Auto wolne.",
                     type="positive",
                 )
             else:
@@ -2883,7 +3124,7 @@ async def system_page() -> None:
                     ui.label("Ostatni plan: brak").classes("text-sm")
                 else:
                     ui.label(
-                        f"Ostatni plan #{st.latest_plan_id} · "
+                        f"Ostatnia generacja #{st.latest_plan_id} · "
                         f"{plan_status_pl(st.latest_plan_status)}"
                     ).classes("text-sm")
                 ui.label(f"Ostatni import: {st.last_import_summary or 'brak'}").classes("text-sm")
