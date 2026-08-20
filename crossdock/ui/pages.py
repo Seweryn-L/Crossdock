@@ -2102,23 +2102,45 @@ async def map_page(run_id: int | None = None) -> None:
                 ui.label("Legenda pojazdów").classes("font-medium").style(
                     "color: var(--cd-heading)"
                 )
-                ui.button(icon="close", on_click=legend_dialog.close).props("flat round dense")
 
-            def show_all() -> None:
+                def apply_legend() -> None:
+                    if suppress_events["v"]:
+                        return
+                    legend_dialog.close()
+                    _persist_and_reload()
+
+                ui.button(icon="close", on_click=apply_legend).props("flat round dense")
+
+            def _set_all_checks(visible: bool) -> None:
                 if suppress_events["v"]:
                     return
-                state["isolated"] = None
-                state["hidden"] = set()
-                for _code, cb in vehicle_checks.items():
-                    cb.value = True
+                suppress_events["v"] = True
+                try:
+                    state["isolated"] = None
+                    if visible:
+                        state["hidden"] = set()
+                    else:
+                        state["hidden"] = set(vehicle_checks.keys())
+                    for _code, cb in vehicle_checks.items():
+                        cb.value = visible
+                finally:
+                    suppress_events["v"] = False
                 _sync_legend_rows()
-                legend_dialog.close()
-                _persist_and_reload()
 
-            ui.button("Pokaż wszystkie", on_click=show_all).props("outline dense no-caps")
-            ui.label("Odznacz = ukryj. Klik w nazwę = tylko ten pojazd.").classes(
-                "text-sm text-gray-600"
-            )
+            def show_all() -> None:
+                _set_all_checks(True)
+
+            def hide_all() -> None:
+                _set_all_checks(False)
+
+            with ui.row().classes("gap-2 flex-wrap"):
+                ui.button("Pokaż wszystkie", on_click=show_all).props("outline dense no-caps")
+                ui.button("Ukryj wszystkie", on_click=hide_all).props("outline dense no-caps")
+                ui.button("Zastosuj", on_click=apply_legend).props("color=primary dense no-caps")
+            ui.label(
+                "Zaznacz / odznacz wiele pozycji, potem „Zastosuj”. "
+                "Klik w nazwę = tylko ten pojazd (izolacja)."
+            ).classes("text-sm text-gray-600")
 
             for route in view.routes:
                 km = f"{route.distance_km:.1f} km" if route.distance_km is not None else "?"
@@ -2147,21 +2169,23 @@ async def map_page(run_id: int | None = None) -> None:
                             hidden.add(code)
                             if state["isolated"] == code:
                                 state["isolated"] = None
-                        legend_dialog.close()
-                        _persist_and_reload()
+                        _sync_legend_rows()
 
                     def _on_isolate() -> None:
                         if suppress_events["v"]:
                             return
-                        if state["isolated"] == code:
-                            state["isolated"] = None
-                        else:
-                            state["isolated"] = code
-                            hidden: set[str] = state["hidden"]  # type: ignore[assignment]
-                            hidden.discard(code)
-                            vehicle_checks[code].value = True
-                        legend_dialog.close()
-                        _persist_and_reload()
+                        suppress_events["v"] = True
+                        try:
+                            if state["isolated"] == code:
+                                state["isolated"] = None
+                            else:
+                                state["isolated"] = code
+                                hidden: set[str] = state["hidden"]  # type: ignore[assignment]
+                                hidden.discard(code)
+                                vehicle_checks[code].value = True
+                        finally:
+                            suppress_events["v"] = False
+                        _sync_legend_rows()
 
                     return _on_check, _on_isolate
 
@@ -2381,8 +2405,8 @@ async def reports_page() -> None:
         with ui.element("div").classes("cd-ops-panel w-full gap-2"):
             ui.label("Historia generacji").classes("font-medium")
             ui.label(
-                "Audyt uruchomień solvera. Podgląd na mapie nie zmienia bieżącego stanu "
-                "operacyjnego w Operacjach."
+                "Audyt uruchomień solvera. Zaznacz checkboxami, potem „Podgląd na mapie” "
+                "(nie zmienia bieżącego stanu w Operacjach)."
             ).classes("text-sm text-gray-600")
             history_host = ui.element("div").classes("cd-grid-host")
             with history_host:
@@ -2390,6 +2414,7 @@ async def reports_page() -> None:
                     ui.aggrid(
                         {
                             "columnDefs": [
+                                selection_column(multiple=True),
                                 {"headerName": "ID", "field": "run_id", "width": 70},
                                 {"headerName": "Etykieta", "field": "label", "flex": 1},
                                 {"headerName": "Status", "field": "status_pl", "width": 140},
@@ -2399,7 +2424,8 @@ async def reports_page() -> None:
                                 {"headerName": "Koszt €", "field": "cost", "width": 100},
                             ],
                             "rowData": [],
-                            "rowSelection": "single",
+                            "rowSelection": "multiple",
+                            "suppressRowClickSelection": True,
                             "domLayout": "normal",
                         }
                     )
@@ -2410,34 +2436,32 @@ async def reports_page() -> None:
             async def open_history_map() -> None:
                 rows = await history_grid.get_selected_rows()
                 if not rows:
-                    ui.notify("Zaznacz generację w historii.", type="warning")
+                    ui.notify("Zaznacz co najmniej jedną generację.", type="warning")
                     return
                 rid = int(rows[0]["run_id"])
                 ui.navigate.to(f"/map?run_id={rid}")
 
-            async def open_history_report() -> None:
-                rows = await history_grid.get_selected_rows()
-                if not rows:
-                    ui.notify("Zaznacz generację w historii.", type="warning")
-                    return
-                rid = int(rows[0]["run_id"])
-                _set_active_run_id(rid)
-                await refresh_report()
-                ui.notify(f"Raport dla generacji #{rid}.", type="info")
+            def _history_enlarge_toolbar() -> None:
+                ui.button(
+                    "Podgląd na mapie",
+                    icon="map",
+                    on_click=open_history_map,
+                ).props("outline")
 
             with ui.row().classes("cd-toolbar"):
-                ui.button("Podgląd na mapie", icon="map", on_click=open_history_map).props(
-                    "outline"
+                _history_enlarge_toolbar()
+                enlarge_history_btn = ui.button("Powiększ", icon="open_in_full").props(
+                    "flat dense no-caps"
                 )
-                ui.button(
-                    "Pokaż efektywność", icon="assessment", on_click=open_history_report
-                ).props("outline")
-                enlarge_grid_button(
+            enlarge_history_btn.on_click(
+                attach_grid_enlarge(
                     history_grid,
                     history_host,
                     title="Historia generacji",
                     compact_height="220px",
+                    toolbar_builder=_history_enlarge_toolbar,
                 )
+            )
 
         async def refresh_report() -> None:
             preferred = _active_run_id_from_storage()
