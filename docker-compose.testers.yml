@@ -1,0 +1,83 @@
+# Four isolated Crossdock instances for parallel tester sessions (Oracle VM / Docker).
+# Usage:
+#   cp deploy/.env.tester.example deploy/.env.t1   # ×4, fill secrets
+#   bash deploy/bootstrap-testers.sh
+#
+# Each person opens http://PUBLIC_IP:8081 … :8084 — own SQLite, own admin password.
+
+services:
+  crossdock-t1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crossdock-t1
+    restart: unless-stopped
+    env_file:
+      - deploy/.env.t1
+    environment:
+      CROSSDOCK_HOST: "0.0.0.0"
+      CROSSDOCK_PORT: "8080"
+      CROSSDOCK_DB_PATH: data/crossdock.db
+      CROSSDOCK_BACKUP_DIR: data/backups
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data/t1:/app/data
+      - ./config:/app/config:ro
+
+  crossdock-t2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crossdock-t2
+    restart: unless-stopped
+    env_file:
+      - deploy/.env.t2
+    environment:
+      CROSSDOCK_HOST: "0.0.0.0"
+      CROSSDOCK_PORT: "8080"
+      CROSSDOCK_DB_PATH: data/crossdock.db
+      CROSSDOCK_BACKUP_DIR: data/backups
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./data/t2:/app/data
+      - ./config:/app/config:ro
+
+  crossdock-t3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crossdock-t3
+    restart: unless-stopped
+    env_file:
+      - deploy/.env.t3
+    environment:
+      CROSSDOCK_HOST: "0.0.0.0"
+      CROSSDOCK_PORT: "8080"
+      CROSSDOCK_DB_PATH: data/crossdock.db
+      CROSSDOCK_BACKUP_DIR: data/backups
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./data/t3:/app/data
+      - ./config:/app/config:ro
+
+  crossdock-t4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crossdock-t4
+    restart: unless-stopped
+    env_file:
+      - deploy/.env.t4
+    environment:
+      CROSSDOCK_HOST: "0.0.0.0"
+      CROSSDOCK_PORT: "8080"
+      CROSSDOCK_DB_PATH: data/crossdock.db
+      CROSSDOCK_BACKUP_DIR: data/backups
+    ports:
+      - "8084:8080"
+    volumes:
+      - ./data/t4:/app/data
+      - ./config:/app/config:ro

@@ -7,6 +7,10 @@ __pycache__/
 
 # Sekrety — nigdy do repo
 .env
+deploy/.env.t1
+deploy/.env.t2
+deploy/.env.t3
+deploy/.env.t4
 
 # Dane runtime (baza, logi, backupy)
 data/

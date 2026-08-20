@@ -10,6 +10,9 @@ Nie zastępuje docelowego wdrożenia LAN u klienta.
 - `docker/entrypoint.sh` — przygotowanie `data/`, migracje Alembica i start aplikacji
 - `deploy/.env.demo.example` — szablon zmiennych środowiskowych pod serwer demo
 
+Równoległe testy 4 osób (osobne bazy, porty 8081–8084):
+[`docs/hosting_testers.md`](hosting_testers.md) + `docker-compose.testers.yml`.
+
 ## Architektura fazy 1
 
 ```mermaid

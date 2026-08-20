@@ -178,12 +178,35 @@ Uwaga: `curl -I` może zwrócić `405 Method Not Allowed` — to OK (HEAD nie je
 
 ## 6. Wejście z przeglądarki (Twój komputer / zespół)
 
+### Jedno demo (wspólna baza)
+
 ```text
 http://158.180.59.192:8080
 ```
 
 - Login: `admin`
 - Hasło: wartość `CROSSDOCK_ADMIN_PASSWORD` z `.env` na VM
+
+### Cztery niezależne środowiska testowe
+
+Szczegóły: [`docs/hosting_testers.md`](hosting_testers.md).
+
+```bash
+cd ~/Crossdock
+bash deploy/gen-tester-envs.sh
+bash deploy/bootstrap-testers.sh
+```
+
+| Osoba | URL |
+|-------|-----|
+| t1 | `http://158.180.59.192:8081` |
+| t2 | `http://158.180.59.192:8082` |
+| t3 | `http://158.180.59.192:8083` |
+| t4 | `http://158.180.59.192:8084` |
+
+Login: `admin` / hasło z `deploy/.env.tN` (po generatorze: `tester1`…`tester4`).
+
+W Oracle Security List dodaj ingress TCP **8081–8084** (osobne reguły albo zakres, jeśli UI na to pozwala).
 
 ---
 
@@ -203,6 +226,8 @@ Jeśli strona nie otwiera się z internetu, a `curl localhost` działa:
 | Destination Port Range | `8080` |
 
 Źródłowy port musi zostać pusty. Destination = `8080`.
+
+Dla testerów powtórz regułę z Destination `8081` … `8084` (albo jedną regułą z zakresem, jeśli dostępna).
 
 ---
 
