@@ -176,6 +176,8 @@ class AssignmentRouteRow(Base):
     distance_km: Mapped[float]
     cost_eur: Mapped[float]
     route_status: Mapped[str] = mapped_column(String(20), default="proposed")
+    # Optional road geometry from OSRM /route: JSON list of [lat, lon] pairs.
+    polyline_json: Mapped[str | None] = mapped_column(String, nullable=True)
 
     run: Mapped[AssignmentRunRow] = relationship(back_populates="routes")
 

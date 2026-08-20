@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     backup_keep: int = 14
     backup_hour: int = 2
     backup_minute: int = 30
+    # OSRM self-hosted (Faza 2 / stretch) — road distances + route geometries.
+    use_osrm: bool = False
+    osrm_url: str = "http://127.0.0.1:5000"
+    osrm_profile: str = "driving"
+    osrm_timeout_s: float = 30.0
 
     @property
     def database_url(self) -> str:

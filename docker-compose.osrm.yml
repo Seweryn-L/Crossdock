@@ -1,0 +1,31 @@
+# Optional OSRM overlay — road distances + route geometries (Faza 2 / stretch).
+# Requires preprocessed Belgium *.osrm files under ./data/osrm/ (variant A).
+#
+# Start OSRM alone (app on host or already running):
+#   docker compose -f docker-compose.osrm.yml --profile osrm up -d
+#
+# Start app + OSRM together:
+#   docker compose -f docker-compose.yml -f docker-compose.osrm.yml --profile osrm up -d --build
+#
+# App env when sharing the compose network:
+#   CROSSDOCK_USE_OSRM=true
+#   CROSSDOCK_OSRM_URL=http://osrm:5000
+#
+# App env when the app runs on the host:
+#   CROSSDOCK_USE_OSRM=true
+#   CROSSDOCK_OSRM_URL=http://127.0.0.1:5000
+
+services:
+  osrm:
+    profiles: ["osrm"]
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: crossdock-osrm
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data/osrm:/data:ro
+    # Expect preprocessed graph be-nl-de-fr.osrm* in data/osrm/ (see scripts/build_osrm_be_nl_de_fr.ps1).
+    # Algorithm must match preprocessing (MLD = osrm-partition + osrm-customize).
+    command: >-
+      osrm-routed --algorithm mld /data/be-nl-de-fr.osrm

@@ -573,6 +573,12 @@ class AssignmentRepository:
                 )
             )
         for route in routes:
+            polyline = route.get("polyline")
+            polyline_json: str | None = None
+            if polyline is not None:
+                polyline_json = json.dumps(list(polyline), ensure_ascii=False)
+            elif route.get("polyline_json") is not None:
+                polyline_json = str(route["polyline_json"])
             self._session.add(
                 AssignmentRouteRow(
                     run_id=run.id,
@@ -582,6 +588,7 @@ class AssignmentRepository:
                     distance_km=float(route["distance_km"]),
                     cost_eur=float(route["cost_eur"]),
                     route_status=str(route.get("route_status") or "proposed"),
+                    polyline_json=polyline_json,
                 )
             )
         self._session.flush()

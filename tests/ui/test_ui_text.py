@@ -145,9 +145,17 @@ def test_orders_hides_tutorial_copy() -> None:
 
 def test_plan_generation_keeps_sqlite_off_cpu_bound() -> None:
     pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
-    assert "run.cpu_bound(solve_prepared_plan" in pages
+    # Staged pipeline: solvers stay in cpu_bound; OSRM/DB stay in io_bound.
+    assert "run.cpu_bound(solve_assignment_stage" in pages
+    assert "run.cpu_bound(solve_routes_stage" in pages
+    assert "_build_routing_bundle_job" in pages
+    assert "run.io_bound(\n                        _build_routing_bundle_job" in pages
+    assert "_finalize_plan_job" in pages
+    assert "run.io_bound(\n                        _finalize_plan_job" in pages
+    assert "run.io_bound(_persist_plan_job" in pages
     assert "_run_plan_job" not in pages
     assert "run.cpu_bound(_run_plan_job" not in pages
+    assert "run.cpu_bound(solve_prepared_plan" not in pages
 
 
 def test_warehouse_does_not_propose_on_load() -> None:

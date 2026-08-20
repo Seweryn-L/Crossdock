@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from pydantic import SecretStr
@@ -11,7 +12,7 @@ from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
 from crossdock.services.map_view import MapViewService, color_for_vehicle
 from crossdock.services.planning import PlanningService
-from crossdock.storage.repositories import OrderRepository, VehicleRepository
+from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 
 
 def _settings() -> Settings:
@@ -72,11 +73,58 @@ def test_map_view_builds_polyline_in_sequence(db_session: Session) -> None:
     assert view.depot.kind == "depot"
     assert len(view.routes) >= 1
     route = view.routes[0]
-    # Closed path: depot + N drops + depot
+    # Closed path without stored OSRM geometry: depot + N drops + depot
     assert len(route.polyline) == len(route.markers) + 2
     assert route.polyline[0] == route.polyline[-1]
     assert route.polyline[0] == (51.176, 4.836)
     assert len(route.markers) == 3
+
+
+def test_map_view_prefers_stored_osrm_polyline(db_session: Session) -> None:
+    VehicleRepository(db_session).add(
+        Vehicle(
+            code="T1",
+            vehicle_type=VehicleType.TRUCK,
+            pallet_capacity=20,
+            weight_capacity_kg=12000,
+            is_placeholder=False,
+        )
+    )
+    hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="A",
+                shipments=[Shipment(shipment_number="S-A", weight_kg=2000)],
+                pickup_location=hub,
+                delivery_location=Location(
+                    name="Cust-A", city="Brussels", country="BE", latitude=50.85, longitude=4.35
+                ),
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )
+    plan = PlanningService(db_session, settings=_settings()).run_plan(username="tester")
+    repo = AssignmentRepository(db_session)
+    routes = repo.list_routes_for_run(plan.run_id)
+    assert routes
+    dense = [
+        [51.176, 4.836],
+        [51.10, 4.70],
+        [50.95, 4.50],
+        [50.85, 4.35],
+        [51.176, 4.836],
+    ]
+    routes[0].polyline_json = json.dumps(dense)
+    db_session.flush()
+
+    view = MapViewService(db_session, settings=_settings()).build_for_run(plan.run_id)
+    assert view is not None
+    route = view.routes[0]
+    assert len(route.polyline) == 5
+    assert route.polyline[2] == (50.95, 4.50)
+    assert len(route.markers) == 1
 
 
 def test_map_view_skips_missing_coords(db_session: Session) -> None:
@@ -112,9 +160,6 @@ def test_map_view_skips_missing_coords(db_session: Session) -> None:
             ),
         ]
     )
-    # Force both onto plan by giving WITHOUT fake coords after assignment path —
-    # instead: run plan only WITH has coords so WITHOUT becomes unrouted or
-    # assigned without route. Simpler: build view after plan; WITHOUT should warn or be absent.
     plan = PlanningService(db_session, settings=_settings()).run_plan(username="tester")
     view = MapViewService(db_session, settings=_settings()).build_for_run(plan.run_id)
     assert view is not None

@@ -5,6 +5,7 @@ Pure presentation data for NiceGUI Leaflet — no solver, no UI imports.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -39,6 +40,23 @@ def color_for_vehicle(vehicle_code: str) -> str:
     return _VEHICLE_COLORS[idx]
 
 
+def _parse_polyline_json(raw: str | None) -> tuple[tuple[float, float], ...] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, list) or len(data) < 2:
+        return None
+    points: list[tuple[float, float]] = []
+    for item in data:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+        points.append((float(item[0]), float(item[1])))
+    return tuple(points)
+
+
 @dataclass(frozen=True)
 class MapPoint:
     latitude: float
@@ -55,7 +73,7 @@ class VehicleMapRoute:
     distance_km: float | None
     cost_eur: float | None
     route_status: str
-    # Closed path: depot → drops in sequence → depot
+    # Closed path: depot → drops in sequence → depot (or denser OSRM geometry)
     polyline: tuple[tuple[float, float], ...]
     markers: tuple[MapPoint, ...]
 
@@ -157,6 +175,11 @@ class MapViewService:
                 continue
             path.append((depot_lat, depot_lon))
             meta = routes_meta.get(vehicle_code)
+            stored = _parse_polyline_json(meta.polyline_json if meta is not None else None)
+            polyline = stored if stored is not None else tuple(path)
+            for lat, lon in polyline:
+                all_lats.append(lat)
+                all_lons.append(lon)
             vehicle_routes.append(
                 VehicleMapRoute(
                     vehicle_code=vehicle_code,
@@ -164,7 +187,7 @@ class MapViewService:
                     distance_km=meta.distance_km if meta else None,
                     cost_eur=meta.cost_eur if meta else None,
                     route_status=meta.route_status if meta is not None else "proposed",
-                    polyline=tuple(path),
+                    polyline=polyline,
                     markers=tuple(markers),
                 )
             )

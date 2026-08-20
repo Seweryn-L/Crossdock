@@ -14,6 +14,8 @@ from pathlib import Path
 from nicegui import app, run, ui
 
 from crossdock.config import effective_planning_date, get_settings
+from crossdock.distance.factory import get_distance_provider
+from crossdock.distance.osrm import OsrmDistanceProvider
 from crossdock.domain.models import Location, Order, Vehicle, VehicleType
 from crossdock.services.app_settings import (
     editable_settings_snapshot,
@@ -41,9 +43,16 @@ from crossdock.services.orders import (
 )
 from crossdock.services.plan_view import PlanView, build_plan_view, list_in_transit_routes
 from crossdock.services.planning import (
+    AssignmentStageResult,
     PlanningService,
+    PlanSolveRequest,
     PreparedPlanResult,
-    solve_prepared_plan,
+    RoutingBundle,
+    assemble_prepared_plan,
+    build_routing_bundle,
+    fetch_route_polylines,
+    solve_assignment_stage,
+    solve_routes_stage,
 )
 from crossdock.services.reports import ReportBundle, build_report, export_report_xlsx
 from crossdock.services.system_status import (
@@ -290,6 +299,38 @@ def _prepare_plan_job(target_run_id: int | None, force_new: bool = False):
             target_run_id=target_run_id,
             force_new=force_new,
         )
+
+
+def _build_routing_bundle_job(assignment_stage: AssignmentStageResult, request: PlanSolveRequest):
+    distance = get_distance_provider(get_settings())
+    return build_routing_bundle(assignment_stage.assignment, request, distance=distance)
+
+
+def _finalize_plan_job(
+    request: PlanSolveRequest,
+    assignment_stage: AssignmentStageResult,
+    bundle: RoutingBundle,
+    routing: object,
+) -> PreparedPlanResult:
+    """OSRM /route (if enabled) + assemble persistable plan — ``run.io_bound``."""
+    settings = get_settings()
+    polylines: dict[int, list[tuple[float, float]]] | None = None
+    if settings.use_osrm:
+        provider = get_distance_provider(settings)
+        if isinstance(provider, OsrmDistanceProvider):
+            polylines = fetch_route_polylines(
+                routing,  # type: ignore[arg-type]
+                request,
+                bundle,
+                route_fetcher=provider.route_polyline,
+            )
+    return assemble_prepared_plan(
+        request,
+        assignment_stage.assignment,
+        bundle,
+        routing,  # type: ignore[arg-type]
+        polylines_by_vehicle=polylines,
+    )
 
 
 def _persist_plan_job(
@@ -1350,11 +1391,28 @@ async def plans_page() -> None:
             target_id = int(target) if isinstance(target, int) else None
             try:
                 request = await run.io_bound(_prepare_plan_job, target_id, False)
-                gen_progress.set_value(0.2)
-                gen_stage.set_text("Optymalizacja")
+                gen_progress.set_value(0.15)
+                gen_stage.set_text("Przydział pojazdów")
                 gen_tick.activate()
                 try:
-                    prepared = await run.cpu_bound(solve_prepared_plan, request)
+                    assignment_stage = await run.cpu_bound(solve_assignment_stage, request)
+                    gen_progress.set_value(0.35)
+                    gen_stage.set_text("Macierz odległości")
+                    bundle = await run.io_bound(
+                        _build_routing_bundle_job, assignment_stage, request
+                    )
+                    gen_progress.set_value(0.5)
+                    gen_stage.set_text("Optymalizacja tras")
+                    routing = await run.cpu_bound(solve_routes_stage, request, bundle)
+                    gen_progress.set_value(0.75)
+                    gen_stage.set_text("Geometria tras")
+                    prepared = await run.io_bound(
+                        _finalize_plan_job,
+                        request,
+                        assignment_stage,
+                        bundle,
+                        routing,
+                    )
                 finally:
                     gen_tick.deactivate()
                 if float(gen_progress.value or 0) < 0.9:
@@ -1715,8 +1773,8 @@ async def map_page(run_id: int | None = None) -> None:
     with page_frame("Mapa"):
         ops_page_header(
             "Mapa",
-            "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku; "
-            "strzałki pokazują kierunek jazdy.",
+            "Trasy aktywnego planu. Linie łączą magazyn z punktami rozładunku "
+            "(po drogach, gdy włączono OSRM); strzałki pokazują kierunek jazdy.",
         )
         chosen_explicit = run_id is not None
         chosen = run_id if chosen_explicit else _active_run_id_from_storage()

@@ -9,7 +9,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
+from crossdock.distance.factory import get_distance_provider
 from crossdock.distance.haversine import HaversineDistanceProvider
+from crossdock.distance.ports import DistanceProvider
 from crossdock.domain.models import Location, Order, OrderStatus, Vehicle
 from crossdock.domain.sla import is_overdue, slack_days
 from crossdock.optimization.assignment import solve_assignment
@@ -18,6 +20,7 @@ from crossdock.optimization.dto import (
     AssignmentResult,
     PlanResult,
     RoutingRequest,
+    RoutingResult,
     SolverOrder,
     SolverVehicle,
     VehicleRoutingInput,
@@ -137,6 +140,24 @@ class PreparedPlanResult:
     skipped_no_coords: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class AssignmentStageResult:
+    """CP-SAT assignment only — safe for ``run.cpu_bound`` (no I/O)."""
+
+    assignment: AssignmentResult
+
+
+@dataclass(frozen=True)
+class RoutingBundle:
+    """Pickle-safe routing inputs after distance matrix is known."""
+
+    vehicles: tuple[VehicleRoutingInput, ...]
+    skipped_coord_codes: tuple[str, ...]
+    no_coords_ids: tuple[int, ...]
+    # drop_key -> (lat, lon) for geometry enrichment after routing.
+    drop_coords: tuple[tuple[str, float, float], ...]
+
+
 def orders_to_solver(
     orders: list[Order],
     *,
@@ -218,12 +239,13 @@ def _build_routing_inputs(
     loads: list[Any],
     orders_by_id: dict[int, OrderGeoSnapshot],
     depot: tuple[float, float],
-    distance: HaversineDistanceProvider,
-) -> tuple[list[VehicleRoutingInput], list[str], set[int]]:
+    distance: DistanceProvider,
+) -> tuple[list[VehicleRoutingInput], list[str], set[int], dict[str, tuple[float, float]]]:
     """Group assigned orders into drop nodes; skip orders without usable coords."""
     skipped_codes: list[str] = []
     no_coords_ids: set[int] = set()
     vehicles_out: list[VehicleRoutingInput] = []
+    drop_coords: dict[str, tuple[float, float]] = {}
 
     for load in loads:
         if not load.order_ids:
@@ -255,6 +277,8 @@ def _build_routing_inputs(
             continue
 
         keys = list(drops.keys())
+        for key in keys:
+            drop_coords[key] = (drops[key][0], drops[key][1])
         points: list[tuple[float, float]] = [depot] + [(drops[k][0], drops[k][1]) for k in keys]
         matrix_km = distance.distance_matrix(points)
         matrix_m = tuple(
@@ -271,11 +295,11 @@ def _build_routing_inputs(
                 distance_matrix_m=matrix_m,
             )
         )
-    return vehicles_out, skipped_codes, no_coords_ids
+    return vehicles_out, skipped_codes, no_coords_ids, drop_coords
 
 
-def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
-    """Assignment + routing with no DB access — safe for run.cpu_bound."""
+def solve_assignment_stage(request: PlanSolveRequest) -> AssignmentStageResult:
+    """CP-SAT only — safe for ``run.cpu_bound`` (no distance I/O)."""
     assignment = solve_assignment(
         AssignmentRequest(
             orders=request.solver_orders,
@@ -287,19 +311,40 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             ship_lead_days=request.ship_lead_days,
         )
     )
+    return AssignmentStageResult(assignment=assignment)
 
+
+def build_routing_bundle(
+    assignment: AssignmentResult,
+    request: PlanSolveRequest,
+    *,
+    distance: DistanceProvider | None = None,
+) -> RoutingBundle:
+    """Build per-vehicle matrices. May call OSRM — use ``run.io_bound``."""
+    provider = distance if distance is not None else HaversineDistanceProvider()
     geos_by_id = {g.id: g for g in request.order_geos}
-    distance = HaversineDistanceProvider()
-    routing_inputs, skipped_coord_codes, no_coords_ids = _build_routing_inputs(
+    routing_inputs, skipped_coord_codes, no_coords_ids, drop_coords = _build_routing_inputs(
         loads=list(assignment.loads),
         orders_by_id=geos_by_id,
         depot=request.depot,
-        distance=distance,
+        distance=provider,
+    )
+    return RoutingBundle(
+        vehicles=tuple(routing_inputs),
+        skipped_coord_codes=tuple(skipped_coord_codes),
+        no_coords_ids=tuple(sorted(no_coords_ids)),
+        drop_coords=tuple((k, lat, lon) for k, (lat, lon) in drop_coords.items()),
     )
 
-    routing = solve_routes(
+
+def solve_routes_stage(
+    request: PlanSolveRequest,
+    bundle: RoutingBundle,
+) -> RoutingResult:
+    """OR-Tools routing on a prepared matrix — safe for ``run.cpu_bound``."""
+    return solve_routes(
         RoutingRequest(
-            vehicles=tuple(routing_inputs),
+            vehicles=bundle.vehicles,
             max_drops_per_route=request.max_drops_per_route,
             time_limit_s=request.routing_limit_s,
             seed=request.seed,
@@ -307,6 +352,16 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
         )
     )
 
+
+def assemble_prepared_plan(
+    request: PlanSolveRequest,
+    assignment: AssignmentResult,
+    bundle: RoutingBundle,
+    routing: RoutingResult,
+    *,
+    polylines_by_vehicle: dict[int, list[tuple[float, float]]] | None = None,
+) -> PreparedPlanResult:
+    """Map solver output to persistable DTOs (pure CPU)."""
     warnings = list(assignment.warnings) + list(routing.warnings)
     if request.held_skipped:
         held = request.held_skipped
@@ -322,6 +377,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             + ", ".join(skipped_weight[:10])
             + ("…" if len(skipped_weight) > 10 else "")
         )
+    skipped_coord_codes = list(bundle.skipped_coord_codes)
     if skipped_coord_codes:
         warnings.append(
             f"Brak współrzędnych dla {len(skipped_coord_codes)} zleceń "
@@ -342,6 +398,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
 
     fill_by_vehicle = {load.vehicle_id: load.fill_ratio for load in assignment.loads}
     sequence_by_order: dict[int, tuple[int, str, int, str]] = {}
+    routing_inputs = list(bundle.vehicles)
     for route in routing.routes:
         seq = 1
         drop_for_order: dict[int, str] = {}
@@ -364,6 +421,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             seq += 1
 
     routed_ids = set(sequence_by_order)
+    no_coords_ids = set(bundle.no_coords_ids)
     unrouted_ids = set(routing.unrouted_order_ids) | no_coords_ids
     unassigned_ids = list(assignment.unassigned_order_ids)
 
@@ -394,6 +452,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
                     }
                 )
 
+    poly = polylines_by_vehicle or {}
     routes_payload = [
         {
             "vehicle_id": r.vehicle_id,
@@ -401,6 +460,7 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
             "drop_count": r.drop_count,
             "distance_km": r.distance_km,
             "cost_eur": r.cost_eur,
+            "polyline": poly.get(r.vehicle_id),
         }
         for r in routing.routes
     ]
@@ -424,6 +484,100 @@ def solve_prepared_plan(request: PlanSolveRequest) -> PreparedPlanResult:
         planned_order_ids=planned_ids,
         skipped_no_weight=request.skipped_weight,
         skipped_no_coords=tuple(skipped_coord_codes),
+    )
+
+
+def waypoints_for_route(
+    *,
+    depot: tuple[float, float],
+    ordered_drop_keys: tuple[str, ...],
+    drop_coords: dict[str, tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Closed path depot → drops in sequence → depot."""
+    path: list[tuple[float, float]] = [depot]
+    for key in ordered_drop_keys:
+        coords = drop_coords.get(key)
+        if coords is None:
+            continue
+        path.append(coords)
+    path.append(depot)
+    return path
+
+
+def fetch_route_polylines(
+    routing: RoutingResult,
+    request: PlanSolveRequest,
+    bundle: RoutingBundle,
+    *,
+    route_fetcher: Any,
+) -> dict[int, list[tuple[float, float]]]:
+    """Call OSRM ``/route`` (or any fetcher) per vehicle. Use ``run.io_bound``."""
+    drop_coords = {key: (lat, lon) for key, lat, lon in bundle.drop_coords}
+    out: dict[int, list[tuple[float, float]]] = {}
+    for route in routing.routes:
+        points = waypoints_for_route(
+            depot=request.depot,
+            ordered_drop_keys=route.ordered_drop_keys,
+            drop_coords=drop_coords,
+        )
+        if len(points) < 2:
+            continue
+        try:
+            out[route.vehicle_id] = list(route_fetcher(points))
+        except Exception:
+            # Fallback: straight segments between waypoints.
+            out[route.vehicle_id] = points
+    return out
+
+
+def with_route_polylines(
+    prepared: PreparedPlanResult,
+    polylines_by_vehicle: dict[int, list[tuple[float, float]]],
+) -> PreparedPlanResult:
+    """Attach road geometries to an already-assembled plan result."""
+    routes = []
+    for route in prepared.routes:
+        payload = dict(route)
+        vid = payload.get("vehicle_id")
+        if isinstance(vid, int) and vid in polylines_by_vehicle:
+            payload["polyline"] = polylines_by_vehicle[vid]
+        routes.append(payload)
+    return PreparedPlanResult(
+        existing_run_id=prepared.existing_run_id,
+        plan=prepared.plan,
+        items=prepared.items,
+        routes=tuple(routes),
+        unassigned_order_ids=prepared.unassigned_order_ids,
+        order_meta=prepared.order_meta,
+        planned_order_ids=prepared.planned_order_ids,
+        skipped_no_weight=prepared.skipped_no_weight,
+        skipped_no_coords=prepared.skipped_no_coords,
+    )
+
+
+def solve_prepared_plan(
+    request: PlanSolveRequest,
+    *,
+    distance: DistanceProvider | None = None,
+    route_fetcher: Any | None = None,
+) -> PreparedPlanResult:
+    """Assignment + routing. Prefer the staged UI path when OSRM I/O is enabled.
+
+    Sync helper for tests and ``PlanningService.run_plan``. When ``distance``
+    performs HTTP (OSRM), this must not be called from ``run.cpu_bound``.
+    """
+    stage = solve_assignment_stage(request)
+    bundle = build_routing_bundle(stage.assignment, request, distance=distance)
+    routing = solve_routes_stage(request, bundle)
+    polylines: dict[int, list[tuple[float, float]]] | None = None
+    if route_fetcher is not None:
+        polylines = fetch_route_polylines(routing, request, bundle, route_fetcher=route_fetcher)
+    return assemble_prepared_plan(
+        request,
+        stage.assignment,
+        bundle,
+        routing,
+        polylines_by_vehicle=polylines,
     )
 
 
@@ -751,8 +905,15 @@ class PlanningService:
         target_run_id: int | None = None,
         force_new: bool = False,
     ) -> PlanOutcome:
+        request = self.prepare_plan_request(target_run_id=target_run_id, force_new=force_new)
+        distance = get_distance_provider(self._settings)
+        route_fetcher = None
+        if self._settings.use_osrm and hasattr(distance, "route_polyline"):
+            route_fetcher = distance.route_polyline
         prepared = solve_prepared_plan(
-            self.prepare_plan_request(target_run_id=target_run_id, force_new=force_new)
+            request,
+            distance=distance,
+            route_fetcher=route_fetcher,
         )
         return self.persist_prepared_plan(prepared, username=username)
 

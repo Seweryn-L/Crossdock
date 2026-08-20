@@ -21,8 +21,28 @@ flowchart TB
   Data --> Backups[backups]
 ```
 
-W tej fazie aplikacja działa na obecnym providerze odległości (haversine).
-OSRM nie jest jeszcze uruchamiany w Compose.
+Domyślnie aplikacja działa na providerze odległości haversine.
+OSRM (trasy drogowe) jest opcjonalny — osobny plik [`docker-compose.osrm.yml`](../docker-compose.osrm.yml)
+z profilem `osrm` i preprocessed datasetem Belgii w `data/osrm/`.
+Szczegóły: [`docs/osrm_local.md`](osrm_local.md).
+
+```bash
+# OSRM lokalnie (wymaga gotowych plików *.osrm w data/osrm/)
+docker compose -f docker-compose.osrm.yml --profile osrm up -d
+
+# Aplikacja + OSRM w jednej sieci Compose
+docker compose -f docker-compose.yml -f docker-compose.osrm.yml --profile osrm up -d --build
+```
+
+W `.env` ustaw wtedy:
+
+```text
+CROSSDOCK_USE_OSRM=true
+CROSSDOCK_OSRM_URL=http://osrm:5000
+CROSSDOCK_OSRM_PROFILE=driving
+```
+
+Gdy aplikacja działa na hoście, a OSRM w Dockerze: `CROSSDOCK_OSRM_URL=http://127.0.0.1:5000`.
 
 ## Uwagi o bazie SQLite w volume
 
