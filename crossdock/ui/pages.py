@@ -84,7 +84,6 @@ from crossdock.ui.labels import (
     GENERATE_PROTECT_HINT,
     PLAN_NAME_MAX_LEN,
     UNLOCK_ROUTE_HINT,
-    buffer_action_pl,
     format_plan_label,
     order_status_pl,
     plan_status_pl,
@@ -2705,7 +2704,11 @@ async def warehouse_page() -> None:
             with ui.row().classes("w-full items-center justify-between"):
                 with ui.row().classes("items-center gap-1"):
                     ui.label("Propozycja buforowania").classes("cd-wh-card-title")
-                    info_hint("Oszczędność kosztowa: przytrzymaj towar albo wyślij teraz.")
+                    info_hint(
+                        "Tu zatwierdzasz tylko przytrzymanie (oszczędność vs wysyłka teraz). "
+                        "„Wyślij teraz” to sygnał, że bufor się nie opłaca lub brak luzu — "
+                        "bez akcji na Magazynie; wróć do Planów albo ustaw priorytet w kolejce."
+                    )
                 enlarge_buffer_btn = ui.button("Powiększ", icon="open_in_full").props(
                     "flat dense no-caps"
                 )
@@ -2722,7 +2725,6 @@ async def warehouse_page() -> None:
                                 selection_column(multiple=True),
                                 {"headerName": "Kod", "field": "delivery_code"},
                                 {"headerName": "ID", "field": "order_id", "width": 80},
-                                {"headerName": "Decyzja", "field": "action"},
                                 {"headerName": "Dni", "field": "buffer_days"},
                                 {"headerName": "Oszczędność %", "field": "savings_pct"},
                             ],
@@ -2739,7 +2741,7 @@ async def warehouse_page() -> None:
                 refresh_buffer_btn = ui.button("Odśwież propozycję", icon="calculate").props(
                     "outline"
                 )
-                accept_buffer_btn = ui.button("Akceptuj zaznaczone", icon="check").props(
+                accept_buffer_btn = ui.button("Akceptuj przytrzymanie", icon="check").props(
                     "color=primary"
                 )
 
@@ -2929,32 +2931,33 @@ async def warehouse_page() -> None:
                 ui.notify(f"Błąd propozycji: {exc}", type="negative")
                 return
             buffer_decisions = {d.order_id: d for d in bundle.decisions}
+            buffer_only = [d for d in bundle.decisions if d.action == "buffer"]
             buffer_grid.options["rowData"] = [
                 {
                     "delivery_code": d.delivery_code,
                     "order_id": d.order_id,
-                    "action": buffer_action_pl(d.action),
                     "buffer_days": d.buffer_days,
                     "savings_pct": round(d.savings_ratio * 100, 1),
                     "_code": d.action,
                 }
-                for d in bundle.decisions
+                for d in buffer_only
             ]
             buffer_grid.update()
             buffer_summary.set_text(
-                f"Kandydaci: {len(bundle.decisions)} · "
-                f"przytrzymaj: {bundle.buffer_count} · "
-                f"wyślij teraz: {bundle.ship_now_count}"
+                f"Policzono {len(bundle.decisions)} · "
+                f"do przytrzymania: {bundle.buffer_count} (w tabeli) · "
+                f"wyślij teraz: {bundle.ship_now_count} "
+                f"(bez akcji tutaj — Plany / kolejka)"
             )
 
         async def on_accept_buffer() -> None:
             selected = await buffer_grid.get_selected_rows()
             if not selected:
-                ui.notify("Zaznacz propozycje „przytrzymaj”.", type="warning")
+                ui.notify("Zaznacz zlecenia do przytrzymania.", type="warning")
                 return
             ids = [int(r["order_id"]) for r in selected if r.get("_code") == "buffer"]
             if not ids:
-                ui.notify("Zaznacz wiersze z decyzją „przytrzymaj”.", type="warning")
+                ui.notify("Zaznacz zlecenia do przytrzymania.", type="warning")
                 return
             accepted = await run.io_bound(_accept_buffer_job, ids, buffer_decisions, username)
             ui.notify(f"Zaakceptowano: {accepted}.", type="positive" if accepted else "warning")
@@ -2978,7 +2981,7 @@ async def warehouse_page() -> None:
                 on_click=refresh_buffer,
             ).props("outline")
             ui.button(
-                "Akceptuj zaznaczone",
+                "Akceptuj przytrzymanie",
                 icon="check",
                 on_click=on_accept_buffer,
             ).props("color=primary")

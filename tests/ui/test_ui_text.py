@@ -169,3 +169,12 @@ def test_warehouse_does_not_propose_on_load() -> None:
     assert last == "await refresh_all()"
     assert "compute_buffer_proposals" in pages
     assert "propose_buffering" not in pages
+
+
+def test_warehouse_buffer_ui_accepts_hold_only() -> None:
+    pages = (UI_DIR / "pages.py").read_text(encoding="utf-8")
+    warehouse = pages.split("async def warehouse_page")[1].split("def _load_warehouse_view")[0]
+    assert "Akceptuj przytrzymanie" in warehouse
+    assert "Akceptuj zaznaczone" not in warehouse
+    assert 'd.action == "buffer"' in warehouse
+    assert '"headerName": "Decyzja"' not in warehouse
