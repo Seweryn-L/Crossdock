@@ -13,8 +13,10 @@ testers_compose() {
 }
 
 osrm_graph_ready() {
-  local graph="data/osrm/be-nl-de-fr.osrm"
-  [[ -f "$graph" ]]
+  # MLD preprocessing often leaves only be-nl-de-fr.osrm.* shards (no bare .osrm file).
+  local base="data/osrm/be-nl-de-fr.osrm"
+  [[ -f "$base" ]] && return 0
+  [[ -f "${base}.mldgr" || -f "${base}.fileIndex" || -f "${base}.geometry" ]]
 }
 
 wait_for_osrm() {

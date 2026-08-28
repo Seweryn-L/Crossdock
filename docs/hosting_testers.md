@@ -40,7 +40,7 @@ docker compose -f docker-compose.testers.yml -f docker-compose.osrm.yml --profil
 ### 0. Wymagania
 
 - Ubuntu + Docker + Docker Compose v2
-- **Graf OSRM** w `data/osrm/be-nl-de-fr.osrm` (+ pliki towarzyszące)
+- **Graf OSRM** w `data/osrm/` (pliki `be-nl-de-fr.osrm*` — po MLD często **bez** gołego pliku `.osrm`)
 - Porty **8081–8084** otwarte w Oracle Security List (opcjonalnie **5000** do debugu OSRM)
 
 ### 1. Graf OSRM na VM
@@ -56,6 +56,7 @@ Na VM sprawdź:
 
 ```bash
 ls -la ~/Crossdock/data/osrm/be-nl-de-fr.osrm*
+# OK jeśli są np. .mldgr / .fileIndex / .geometry (nie musi być goły be-nl-de-fr.osrm)
 ```
 
 **Nie masz grafu?** Zbuduj na VM lub lokalnie — patrz [`docs/osrm_local.md`](osrm_local.md).
@@ -85,7 +86,7 @@ bash deploy/bootstrap-testers.sh
 
 Skrypt:
 
-1. Sprawdza `data/osrm/be-nl-de-fr.osrm`
+1. Sprawdza katalog `data/osrm/` (shardy MLD, np. `be-nl-de-fr.osrm.mldgr`)
 2. Ustawia `CROSSDOCK_USE_OSRM=true` w każdym `deploy/.env.tN`
 3. Uruchamia 4 kontenery + OSRM w **jednej sieci Compose** (`http://osrm:5000`)
 4. Czeka aż OSRM odpowie na teście trasy Bruksela→Paryż
@@ -155,7 +156,7 @@ to osobny stack i osobny volume `./data`.
 | Objaw | Przyczyna | Co zrobić |
 |-------|-----------|-----------|
 | Linie proste na mapie | Stara generacja lub `USE_OSRM=false` | `patch-tester-env-osrm.sh`, `bootstrap-testers.sh`, kliknij **Generuj** |
-| `Brak grafu OSRM` przy starcie | Brak `data/osrm/be-nl-de-fr.osrm` | Skopiuj/zbuduj graf (krok 1) |
+| `Brak grafu OSRM` przy starcie | Pusty `data/osrm/` | Skopiuj/zbuduj graf (krok 1). Shardy `.osrm.mldgr` wystarczą — goły plik `.osrm` nie jest wymagany |
 | Błąd połączenia z OSRM w logach | OSRM nie wystartował lub osobna sieć | Zawsze używaj **obu** plików compose + `--profile osrm` |
 | `service "osrm" depends on undefined` | Sam `docker-compose.testers.yml` bez osrm | Użyj `bootstrap-testers.sh` lub pełnej komendy `$COMPOSE` |
 | OSRM OOM na VM | Za mało RAM | Zwiększ RAM VM lub użyj mniejszego wycinka map |
