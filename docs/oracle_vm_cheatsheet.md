@@ -187,14 +187,18 @@ http://158.180.59.192:8080
 - Login: `admin`
 - Hasło: wartość `CROSSDOCK_ADMIN_PASSWORD` z `.env` na VM
 
-### Cztery niezależne środowiska testowe
+### Cztery niezależne środowiska testowe (z OSRM)
 
 Szczegóły: [`docs/hosting_testers.md`](hosting_testers.md).
 
+Wymaga grafu `data/osrm/be-nl-de-fr.osrm` na VM (skopiuj z dev lub zbuduj — `docs/osrm_local.md`).
+
 ```bash
 cd ~/Crossdock
+git pull
 bash deploy/gen-tester-envs.sh
-bash deploy/bootstrap-testers.sh
+bash deploy/bootstrap-testers.sh    # startuje też OSRM
+bash deploy/verify-osrm-testers.sh  # opcjonalnie: smoke test
 ```
 
 | Osoba | URL |

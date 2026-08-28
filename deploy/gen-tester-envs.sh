@@ -28,6 +28,7 @@ for i in 1 2 3 4; do
   sed \
     -e "s/^CROSSDOCK_STORAGE_SECRET=.*/CROSSDOCK_STORAGE_SECRET=${secret}/" \
     -e "s/^CROSSDOCK_ADMIN_PASSWORD=.*/CROSSDOCK_ADMIN_PASSWORD=${password}/" \
+    -e "s/^CROSSDOCK_USE_OSRM=.*/CROSSDOCK_USE_OSRM=true/" \
     "$TEMPLATE" >"$dest"
   echo "Utworzono $dest (admin / ${password})"
 done

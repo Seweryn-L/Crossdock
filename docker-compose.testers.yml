@@ -1,9 +1,10 @@
-# Four isolated Crossdock instances for parallel tester sessions (Oracle VM / Docker).
+# Four isolated Crossdock instances + shared OSRM (Oracle VM / Docker).
 # Usage:
-#   cp deploy/.env.tester.example deploy/.env.t1   # ×4, fill secrets
-#   bash deploy/bootstrap-testers.sh
+#   bash deploy/gen-tester-envs.sh
+#   bash deploy/bootstrap-testers.sh   # also starts osrm profile (needs data/osrm/*.osrm)
 #
 # Each person opens http://PUBLIC_IP:8081 … :8084 — own SQLite, own admin password.
+# Road routing: one OSRM container on the same Compose network (hostname osrm).
 
 services:
   crossdock-t1:
@@ -24,6 +25,9 @@ services:
     volumes:
       - ./data/t1:/app/data
       - ./config:/app/config:ro
+    depends_on:
+      osrm:
+        condition: service_started
 
   crossdock-t2:
     build:
@@ -43,6 +47,9 @@ services:
     volumes:
       - ./data/t2:/app/data
       - ./config:/app/config:ro
+    depends_on:
+      osrm:
+        condition: service_started
 
   crossdock-t3:
     build:
@@ -62,6 +69,9 @@ services:
     volumes:
       - ./data/t3:/app/data
       - ./config:/app/config:ro
+    depends_on:
+      osrm:
+        condition: service_started
 
   crossdock-t4:
     build:
@@ -81,3 +91,6 @@ services:
     volumes:
       - ./data/t4:/app/data
       - ./config:/app/config:ro
+    depends_on:
+      osrm:
+        condition: service_started
