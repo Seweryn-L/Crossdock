@@ -129,18 +129,18 @@ Te kwoty są **szkicem**, nie cennikiem przewoźnika.
 
 ---
 
-## 8. Oszczędności w Raportach (KPI)
+## 8. Raporty (KPI)
 
-Baseline (koszt odniesienia): scenariusz **1 zlecenie = 1 pojazd** — każde zlecenie na trasie jedzie samotnie w obie strony.
+Raport i eksport Excel pokazują **fakty z planu**, bez sztucznego baseline „1 zlecenie = 1 pojazd”:
 
-- `K_odniesienia = Σ (2 × dᵢ × s)` po zleceniach na trasach (z współrzędnymi)
-- `K_plan = Σ (km_trasy × s)` — suma kosztów tras planu
-- `Oszczędność € = K_odniesienia − K_plan`
-- `Oszczędność % = (Oszczędność € / K_odniesienia) × 100`
+- **Koszt planu [€]** — suma kosztów tras (`km_trasy × stawka €/km`)
+- **Łączny dystans [km]**
+- **Wykorzystanie floty** — zapełnienie wagowe per pojazd (waga / ładowność)
+- **Porównanie generacji** — delta kosztu, km, pojazdów, zapełnienia, zleceń w magazynie
 
-Stawka `s` = Parametry → Stawka €/km (`cost_per_km`). Zapełnienie w raporcie = waga / ładowność.
+Stawka `s` = Parametry → Stawka €/km (`cost_per_km`).
 
-**Przykład:** dwa zlecenia, d = 100 km, s = 1,20 → baseline 480 €; jedno auto (200 km) → 240 €; oszczędność 240 € (50%).
+Metryka „oszczędności vs baseline” została wycofana — nie odzwierciedlała realnej logistyki firmy.
 
 ---
 

@@ -15,7 +15,6 @@ MetricName = Literal[
     "km",
     "avg_fill_pct",
     "cost_eur",
-    "savings_eur",
     "staying",
 ]
 
@@ -30,7 +29,6 @@ class GenerationComparison:
     delta_km: float
     delta_avg_fill_pct: float
     delta_cost_eur: float
-    delta_savings_eur: float
     delta_staying: int
 
 
@@ -69,7 +67,6 @@ def _comparison_from_kpis(kpi_a: GenerationKpi, kpi_b: GenerationKpi) -> Generat
         delta_km=_delta(kpi_b.total_distance_km, kpi_a.total_distance_km),
         delta_avg_fill_pct=avg_b - avg_a,
         delta_cost_eur=_delta(kpi_b.total_cost_eur, kpi_a.total_cost_eur),
-        delta_savings_eur=_delta(kpi_b.savings_eur, kpi_a.savings_eur),
         delta_staying=kpi_b.staying - kpi_a.staying,
     )
 

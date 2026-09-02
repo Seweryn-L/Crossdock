@@ -12,7 +12,6 @@ class ReportSheetId(StrEnum):
     ROUTED_ORDERS = "routed_orders"
     WAREHOUSE = "warehouse"
     ATTENTION = "attention"
-    SAVINGS = "savings"
     FLEET = "fleet"
     COMPARISON = "comparison"
 
@@ -23,7 +22,6 @@ SHEET_LABELS_PL: dict[ReportSheetId, str] = {
     ReportSheetId.ROUTED_ORDERS: "Zlecenia na trasach",
     ReportSheetId.WAREHOUSE: "W magazynie",
     ReportSheetId.ATTENTION: "Wymaga uwagi",
-    ReportSheetId.SAVINGS: "Oszczędności",
     ReportSheetId.FLEET: "Wykorzystanie floty",
     ReportSheetId.COMPARISON: "Porównanie",
 }
@@ -34,7 +32,6 @@ SHEET_ORDER: tuple[ReportSheetId, ...] = (
     ReportSheetId.ROUTED_ORDERS,
     ReportSheetId.WAREHOUSE,
     ReportSheetId.ATTENTION,
-    ReportSheetId.SAVINGS,
     ReportSheetId.FLEET,
     ReportSheetId.COMPARISON,
 )
@@ -52,7 +49,6 @@ PRESET_DISPATCHER: frozenset[ReportSheetId] = frozenset(
 PRESET_MANAGEMENT: frozenset[ReportSheetId] = frozenset(
     {
         ReportSheetId.SUMMARY,
-        ReportSheetId.SAVINGS,
         ReportSheetId.FLEET,
         ReportSheetId.COMPARISON,
     }

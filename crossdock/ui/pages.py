@@ -2915,7 +2915,7 @@ async def warehouse_page() -> None:
                 with ui.row().classes("items-center gap-1"):
                     ui.label("Propozycja buforowania").classes("cd-wh-card-title")
                     info_hint(
-                        "Tu zatwierdzasz tylko przytrzymanie (oszczędność vs wysyłka teraz). "
+                        "Tu zatwierdzasz tylko przytrzymanie wg progu bufora. "
                         "„Wyślij teraz” to sygnał, że bufor się nie opłaca lub brak luzu — "
                         "bez akcji na Magazynie; wróć do Planów albo ustaw priorytet w kolejce."
                     )
@@ -2936,7 +2936,6 @@ async def warehouse_page() -> None:
                                 {"headerName": "Kod", "field": "delivery_code"},
                                 {"headerName": "ID", "field": "order_id", "width": 80},
                                 {"headerName": "Dni", "field": "buffer_days"},
-                                {"headerName": "Oszczędność %", "field": "savings_pct"},
                             ],
                             "rowData": [],
                             "defaultColDef": grid_default_col_def(),
@@ -3217,7 +3216,6 @@ async def warehouse_page() -> None:
                     "delivery_code": d.delivery_code,
                     "order_id": d.order_id,
                     "buffer_days": d.buffer_days,
-                    "savings_pct": round(d.savings_ratio * 100, 1),
                     "_code": d.action,
                 }
                 for d in buffer_only

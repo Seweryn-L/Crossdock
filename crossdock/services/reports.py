@@ -1,4 +1,4 @@
-"""Plan efficiency reports (FR-017 savings, FR-018 utilization) + Excel export."""
+"""Plan efficiency reports (FR-018 utilization) + Excel export."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pandas as pd  # type: ignore[import-untyped]
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
-from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.domain.attention import attention_reason_pl
 from crossdock.services.plan_view import PlanView, build_plan_view
 from crossdock.services.report_export_options import (
@@ -41,22 +40,11 @@ class UtilizationRow:
 
 
 @dataclass(frozen=True)
-class SavingsSummary:
-    baseline_cost_eur: float
-    optimized_cost_eur: float
-    savings_eur: float
-    savings_pct: float
-    routed_orders: int
-    note: str
-
-
-@dataclass(frozen=True)
 class ReportBundle:
     run_id: int
     plan_status: str
     used_fallback_draft: bool
     utilization: tuple[UtilizationRow, ...]
-    savings: SavingsSummary
     warnings: tuple[str, ...] = field(default_factory=tuple)
     display_name: str | None = None
     created_at: datetime | None = None
@@ -88,7 +76,7 @@ def build_report(
     run_id: int | None = None,
     settings: Settings | None = None,
 ) -> ReportBundle | None:
-    """Build utilization + savings for an approved plan (fallback: latest draft)."""
+    """Build fleet utilization for an approved plan (fallback: latest draft)."""
     cfg = settings or get_settings()
     repo = AssignmentRepository(session)
     used_fallback = False
@@ -109,10 +97,7 @@ def build_report(
 
     routes = repo.list_routes_for_run(run.id)
     items = repo.list_items_for_run(run.id)
-    orders = OrderRepository(session)
     vehicles = VehicleRepository(session)
-    distance = HaversineDistanceProvider()
-    depot = (cfg.depot_latitude, cfg.depot_longitude)
 
     items_by_vehicle: dict[str, list[Any]] = {}
     for item in items:
@@ -146,43 +131,11 @@ def build_report(
             )
         )
 
-    baseline = 0.0
-    routed_count = 0
-    for item in items:
-        if item.sequence is None or item.vehicle_code in {"UNASSIGNED", "UNROUTED"}:
-            continue
-        order = orders.get_by_id(item.order_id)
-        if order is None:
-            continue
-        lat = order.delivery_location.latitude
-        lon = order.delivery_location.longitude
-        if lat is None or lon is None:
-            warnings.append(f"Brak coords dla {item.delivery_code} — pominięto w baseline.")
-            continue
-        leg = distance.distance_km(depot[0], depot[1], lat, lon)
-        baseline += 2.0 * leg * cfg.cost_per_km
-        routed_count += 1
-
-    optimized = float(run.total_cost_eur or 0.0)
-    savings = baseline - optimized
-    savings_pct = (savings / baseline * 100.0) if baseline > 0 else 0.0
-
     return ReportBundle(
         run_id=run.id,
         plan_status=run.plan_status,
         used_fallback_draft=used_fallback,
         utilization=tuple(utilization),
-        savings=SavingsSummary(
-            baseline_cost_eur=round(baseline, 2),
-            optimized_cost_eur=round(optimized, 2),
-            savings_eur=round(savings, 2),
-            savings_pct=round(savings_pct, 1),
-            routed_orders=routed_count,
-            note=(
-                "Baseline: 1 zlecenie = 1 pojazd (2x km depot-drop x cost_per_km). "
-                "Stawki Sandry (W-06) — placeholder."
-            ),
-        ),
         warnings=tuple(warnings),
         display_name=run.display_name,
         created_at=run.created_at,
@@ -208,7 +161,7 @@ def build_report_xlsx_data(
     compare_run_id: int | None = None,
     settings: Settings | None = None,
 ) -> ReportXlsxBundle | None:
-    """Aggregate KPI, plan view, savings, and optional generation comparison."""
+    """Aggregate KPI, plan view, and optional generation comparison."""
     from crossdock.services.generation_compare import compare_generations
     from crossdock.services.generation_kpi import build_generation_kpi
 
@@ -349,14 +302,6 @@ def _rows_summary(bundle: ReportXlsxBundle) -> list[dict[str, Any]]:
                     "Wartość": (
                         round(kpi.total_cost_eur, 2) if kpi.total_cost_eur is not None else None
                     ),
-                },
-                {
-                    "Wskaźnik": "Oszczędność [€]",
-                    "Wartość": round(kpi.savings_eur, 2) if kpi.savings_eur is not None else None,
-                },
-                {
-                    "Wskaźnik": "Oszczędność [%]",
-                    "Wartość": round(kpi.savings_pct, 1) if kpi.savings_pct is not None else None,
                 },
             ]
         )
@@ -514,40 +459,6 @@ def _rows_attention_summary(bundle: ReportXlsxBundle) -> list[dict[str, Any]]:
     return list(bundle.attention_summary)
 
 
-def _rows_savings(bundle: ReportXlsxBundle) -> list[dict[str, Any]]:
-    sav = bundle.report.savings
-    kpi = bundle.kpi
-    pv = bundle.plan_view
-    cfg = bundle.settings_snapshot
-    route_count = len(bundle.report.utilization)
-    avg_cost_route = round(sav.optimized_cost_eur / route_count, 2) if route_count > 0 else None
-    avg_cost_order = (
-        round(sav.optimized_cost_eur / sav.routed_orders, 2) if sav.routed_orders > 0 else None
-    )
-    return [
-        {"Wskaźnik": "Koszt odniesienia €", "Wartość": sav.baseline_cost_eur},
-        {"Wskaźnik": "Koszt zoptymalizowany €", "Wartość": sav.optimized_cost_eur},
-        {"Wskaźnik": "Oszczędność €", "Wartość": sav.savings_eur},
-        {"Wskaźnik": "Oszczędność %", "Wartość": sav.savings_pct},
-        {"Wskaźnik": "Zlecenia na trasie", "Wartość": sav.routed_orders},
-        {"Wskaźnik": "Koszt €/km (ustawienia)", "Wartość": cfg.get("cost_per_km")},
-        {
-            "Wskaźnik": "Łączny dystans planu [km]",
-            "Wartość": (
-                round(kpi.total_distance_km, 1)
-                if kpi is not None and kpi.total_distance_km is not None
-                else None
-            ),
-        },
-        {"Wskaźnik": "Średni koszt / trasa €", "Wartość": avg_cost_route},
-        {"Wskaźnik": "Średni koszt / zlecenie €", "Wartość": avg_cost_order},
-        {"Wskaźnik": "Trasy poniżej progu zapełnienia", "Wartość": pv.below_min_fill_count},
-        {"Wskaźnik": "Numer planu", "Wartość": bundle.report.run_id},
-        {"Wskaźnik": "Status planu", "Wartość": plan_status_pl(bundle.report.plan_status)},
-        {"Wskaźnik": "Uwaga metodologia", "Wartość": sav.note},
-    ]
-
-
 def _rows_fleet_utilization(
     session: Session,
     report: ReportBundle,
@@ -640,12 +551,6 @@ def _rows_comparison(comparison: GenerationComparison) -> list[dict[str, Any]]:
             "Ocena": _sentiment_pl("cost_eur", comparison.delta_cost_eur),
         },
         {
-            "Wskaźnik": "Oszczędność [€]",
-            "Wartość": None,
-            "Delta (B-A)": round(comparison.delta_savings_eur, 2),
-            "Ocena": _sentiment_pl("savings_eur", comparison.delta_savings_eur),
-        },
-        {
             "Wskaźnik": "Zlecenia w magazynie",
             "Wartość": None,
             "Delta (B-A)": comparison.delta_staying,
@@ -696,7 +601,6 @@ def _build_all_sheets(
         ReportSheetId.ROUTED_ORDERS: ("Zlecenia na trasach", list(bundle.routed_orders)),
         ReportSheetId.WAREHOUSE: ("W magazynie", list(bundle.staying_orders)),
         ReportSheetId.ATTENTION: ("Wymaga uwagi", attention_sheet),
-        ReportSheetId.SAVINGS: ("Oszczędności", _rows_savings(bundle)),
         ReportSheetId.FLEET: ("Wykorzystanie floty", list(bundle.fleet_rows)),
         ReportSheetId.COMPARISON: (
             "Porównanie",

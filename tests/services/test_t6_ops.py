@@ -91,8 +91,7 @@ def test_build_and_export_report(db_session: Session) -> None:
     assert bundle.run_id == run_id
     assert bundle.plan_status == "approved"
     assert len(bundle.utilization) >= 1
-    assert bundle.savings.routed_orders >= 2
-    assert bundle.savings.baseline_cost_eur >= bundle.savings.optimized_cost_eur
+    assert all(u.distance_km >= 0 for u in bundle.utilization)
 
     xlsx_bundle = build_report_xlsx_data(db_session, run_id=run_id, settings=_settings())
     assert xlsx_bundle is not None
@@ -108,7 +107,6 @@ def test_build_and_export_report(db_session: Session) -> None:
         "Zlecenia na trasach",
         "W magazynie",
         "Wymaga uwagi",
-        "Oszczędności",
         "Wykorzystanie floty",
     ]
     summary = pd.read_excel(book, "Podsumowanie")
@@ -159,11 +157,11 @@ def test_export_respects_selection(db_session: Session) -> None:
     bundle = build_report_xlsx_data(db_session, run_id=run_id, settings=_settings())
     assert bundle is not None
     selection = ReportExportSelection(
-        sheets=frozenset({ReportSheetId.SUMMARY, ReportSheetId.SAVINGS}),
+        sheets=frozenset({ReportSheetId.SUMMARY, ReportSheetId.FLEET}),
     )
     xlsx = export_report_xlsx(bundle, selection=selection)
     book = pd.ExcelFile(BytesIO(xlsx))
-    assert book.sheet_names == ["Podsumowanie", "Oszczędności"]
+    assert book.sheet_names == ["Podsumowanie", "Wykorzystanie floty"]
 
 
 def test_export_comparison_only_when_selected_and_available(db_session: Session) -> None:
@@ -198,7 +196,6 @@ def test_export_comparison_only_when_selected_and_available(db_session: Session)
         sheets=frozenset(
             {
                 ReportSheetId.SUMMARY,
-                ReportSheetId.SAVINGS,
                 ReportSheetId.FLEET,
             }
         ),

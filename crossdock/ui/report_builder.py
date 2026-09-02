@@ -25,10 +25,7 @@ _OPERATIONS_SHEETS: tuple[ReportSheetId, ...] = (
     ReportSheetId.ATTENTION,
 )
 
-_FINANCE_SHEETS: tuple[ReportSheetId, ...] = (
-    ReportSheetId.SAVINGS,
-    ReportSheetId.FLEET,
-)
+_FINANCE_SHEETS: tuple[ReportSheetId, ...] = (ReportSheetId.FLEET,)
 
 
 class ReportBuilderDialog:

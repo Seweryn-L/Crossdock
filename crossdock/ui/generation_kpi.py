@@ -70,12 +70,8 @@ class GenerationKpiPanel:
             f"Pojazdy: {kpi.vehicles_used}  ·  "
             f"Śr. zapełnienie: {_fmt_pct_ratio(kpi.avg_fill_ratio)}"
         )
-        savings_part = ""
-        if kpi.savings_eur is not None and kpi.savings_pct is not None:
-            savings_part = f"  ·  Oszczędność: {_fmt_eur(kpi.savings_eur)} ({kpi.savings_pct:.0f}%)"
         self._line_costs.set_text(
-            f"Dystans: {_fmt_km(kpi.total_distance_km)}  ·  "
-            f"Koszt: {_fmt_eur(kpi.total_cost_eur)}{savings_part}"
+            f"Dystans: {_fmt_km(kpi.total_distance_km)}  ·  Koszt: {_fmt_eur(kpi.total_cost_eur)}"
         )
 
         self._line_attention.clear()
@@ -125,7 +121,6 @@ class GenerationComparePanel:
                 ("km", comparison.delta_km, "km"),
                 ("śr. zapełnienia", comparison.delta_avg_fill_pct, "avg_fill_pct"),
                 ("koszt", comparison.delta_cost_eur, "cost_eur"),
-                ("oszczędności", comparison.delta_savings_eur, "savings_eur"),
                 ("zlecenia w magazynie", float(comparison.delta_staying), "staying"),
             ]
             for label, delta, metric in rows:
@@ -137,7 +132,7 @@ class GenerationComparePanel:
                     text = f"  {sign}{magnitude:.0f}% {label}"
                 elif metric == "km":
                     text = f"  {sign}{magnitude:.0f} km"
-                elif metric in {"cost_eur", "savings_eur"}:
+                elif metric == "cost_eur":
                     text = f"  {sign}{magnitude:.0f} € {label}"
                 elif metric == "vehicles":
                     text = f"  {sign}{int(magnitude)} {label}"

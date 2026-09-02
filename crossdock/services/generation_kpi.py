@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
 from crossdock.services.plan_view import build_plan_view
-from crossdock.services.reports import build_report
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,8 +25,6 @@ class GenerationKpi:
     avg_fill_ratio: float | None
     total_distance_km: float | None
     total_cost_eur: float | None
-    savings_eur: float | None
-    savings_pct: float | None
     is_empty: bool
 
     @property
@@ -41,7 +38,7 @@ def build_generation_kpi(
     run_id: int | None = None,
     settings: Settings | None = None,
 ) -> GenerationKpi | None:
-    """Combine plan view buckets with report savings for one generation."""
+    """Build generation KPI from plan view (cost, km, utilization buckets)."""
     cfg = settings or get_settings()
     view = build_plan_view(session, cfg, run_id=run_id)
     if view.summary is None:
@@ -63,13 +60,6 @@ def build_generation_kpi(
     if fills:
         avg_fill = sum(fills) / len(fills)
 
-    report = build_report(session, run_id=summary.run_id, settings=cfg)
-    savings_eur: float | None = None
-    savings_pct: float | None = None
-    if report is not None:
-        savings_eur = report.savings.savings_eur
-        savings_pct = report.savings.savings_pct
-
     return GenerationKpi(
         run_id=summary.run_id,
         label=summary.label,
@@ -84,7 +74,5 @@ def build_generation_kpi(
         avg_fill_ratio=avg_fill,
         total_distance_km=summary.total_distance_km,
         total_cost_eur=summary.total_cost_eur,
-        savings_eur=savings_eur,
-        savings_pct=savings_pct,
         is_empty=orders_in_planning == 0 and len(view.routes) == 0,
     )

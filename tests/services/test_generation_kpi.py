@@ -101,4 +101,4 @@ def test_compare_generations_delta(db_session: Session) -> None:
 def test_delta_sentiment_lower_is_better() -> None:
     assert delta_sentiment("km", -10) == "good"
     assert delta_sentiment("km", 10) == "bad"
-    assert delta_sentiment("savings_eur", 50) == "good"
+    assert delta_sentiment("cost_eur", -50) == "good"
