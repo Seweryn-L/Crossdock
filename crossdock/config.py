@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     max_buffer_days: int = 3
     # Simulation clock: None = real calendar today. Used as "day T" for SLA.
     planning_date: date | None = None
-    # Days before delivery_date that the order must leave the warehouse.
+    # Fallback when import has no Pick Plan Date End.
     ship_lead_days: int = 2
     # Cross-dock holding capacity for occupancy monitoring (kg placeholder).
     warehouse_capacity_kg: float = 50000.0

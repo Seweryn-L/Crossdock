@@ -15,8 +15,8 @@ from crossdock.services.planning import PlanningService
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 
 
-def _settings() -> Settings:
-    return Settings(
+def _settings(**overrides: object) -> Settings:
+    base = dict(
         storage_secret=SecretStr("test-secret-not-for-production"),
         solver_time_limit_s=5.0,
         solver_seed=42,
@@ -29,6 +29,8 @@ def _settings() -> Settings:
         warehouse_capacity_kg=1_000_000.0,
         use_osrm=False,
     )
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
 
 
 def test_color_for_vehicle_stable() -> None:
@@ -178,3 +180,43 @@ def test_map_view_skips_missing_coords(db_session: Session) -> None:
 
 def test_map_view_latest_none_when_empty(db_session: Session) -> None:
     assert MapViewService(db_session, settings=_settings()).build_latest() is None
+
+
+def test_map_view_route_has_problem_when_below_min_fill(db_session: Session) -> None:
+    VehicleRepository(db_session).add(
+        Vehicle(
+            code="T1",
+            vehicle_type=VehicleType.TRUCK,
+            pallet_capacity=20,
+            weight_capacity_kg=12000,
+            is_placeholder=False,
+        )
+    )
+    hub = Location(name="Hub", city="Antwerp", country="BE", latitude=51.22, longitude=4.40)
+    OrderRepository(db_session).add_many(
+        [
+            Order(
+                delivery_code="A",
+                shipments=[Shipment(shipment_number="S-A", weight_kg=1500)],
+                pickup_location=hub,
+                delivery_location=Location(
+                    name="Cust-A", city="Paris", country="FR", latitude=48.85, longitude=2.35
+                ),
+                delivery_date=date(2026, 8, 1),
+                status=OrderStatus.NEW,
+            )
+        ]
+    )
+    plan = PlanningService(db_session, settings=_settings(min_fill_ratio=0.90)).run_plan(
+        username="tester"
+    )
+    view = MapViewService(db_session, settings=_settings(min_fill_ratio=0.90)).build_for_run(
+        plan.run_id
+    )
+    assert view is not None
+    assert view.routes
+    route = view.routes[0]
+    assert route.has_problem is True
+    assert route.problem_labels
+    assert "Zapełnienie" in route.problem_labels[0]
+    assert "cd-map-alert" in route.detail_html

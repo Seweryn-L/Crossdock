@@ -84,6 +84,7 @@ def _to_domain_order(row: OrderRow) -> Order:
             longitude=row.delivery_longitude,
         ),
         delivery_date=row.delivery_date,
+        must_leave_by=row.must_leave_by,
         status=OrderStatus(row.status),
     )
 
@@ -158,6 +159,7 @@ class OrderRepository:
                 delivery_latitude=order.delivery_location.latitude,
                 delivery_longitude=order.delivery_location.longitude,
                 delivery_date=order.delivery_date,
+                must_leave_by=order.must_leave_by,
                 status=order.status.value,
                 shipments=[
                     ShipmentRow(
@@ -584,6 +586,7 @@ class AssignmentRepository:
                     fill_ratio=item.get("fill_ratio"),
                     sequence=item.get("sequence"),
                     drop_key=item.get("drop_key"),
+                    attention_reason=item.get("attention_reason"),
                 )
             )
         for order_id in unassigned_order_ids:
@@ -626,22 +629,23 @@ class AssignmentRepository:
         return run.id
 
     def delete_proposed_payload(self, run_id: int) -> None:
-        """Drop proposed routes and non-approved items; keep approved routes."""
+        """Drop proposed routes and non-protected items; keep locked routes."""
+        protected_statuses = {"approved", "in_transit", "completed"}
         routes = self.list_routes_for_run(run_id)
-        approved_vehicle_ids = {
+        protected_vehicle_ids = {
             r.vehicle_id
             for r in routes
-            if r.route_status == "approved" and r.vehicle_id is not None
+            if r.route_status in protected_statuses and r.vehicle_id is not None
         }
         for item in self.list_items_for_run(run_id):
-            keep_approved = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+            keep_approved = item.vehicle_id in protected_vehicle_ids and item.vehicle_code not in {
                 "UNASSIGNED",
                 "UNROUTED",
             }
             if not keep_approved:
                 self._session.delete(item)
         for route in routes:
-            if route.route_status != "approved":
+            if route.route_status not in protected_statuses:
                 self._session.delete(route)
         self._session.flush()
 
@@ -685,7 +689,7 @@ class AssignmentRepository:
         return latest.id if latest else None
 
     def count_routes_by_status(self, run_id: int) -> dict[str, int]:
-        counts = {"proposed": 0, "approved": 0, "completed": 0}
+        counts = {"proposed": 0, "approved": 0, "in_transit": 0, "completed": 0}
         for route in self.list_routes_for_run(run_id):
             status = route.route_status or "proposed"
             if status in counts:

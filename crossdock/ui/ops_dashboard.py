@@ -11,7 +11,12 @@ from nicegui import ui
 from crossdock.services.dashboard import DashboardSnapshot
 from crossdock.text_pl import route_status_pl
 from crossdock.ui.layout import ops_page_header
-from crossdock.ui.widgets import attach_grid_enlarge, info_hint, selection_column
+from crossdock.ui.widgets import (
+    attach_grid_enlarge,
+    grid_default_col_def,
+    info_hint,
+    selection_column,
+)
 
 
 def _status_tile(label: str, value: int, hint: str, extra_class: str = "") -> None:
@@ -97,8 +102,8 @@ def render_ops_focus_dashboard(
                 with ui.row().classes("items-center gap-1"):
                     ui.label("Trasy w drodze").classes("cd-wh-card-title")
                     info_hint(
-                        "Zatwierdzone trasy bieżącego stanu, które jeszcze nie wróciły. "
-                        "Zrealizowane zwalnia auto i oznacza zlecenia jako dostarczone."
+                        "Trasy faktycznie w drodze (po „Wyjechało”). "
+                        "Zrealizowane zwalnia auto i zamyka zlecenia."
                     )
                 enlarge_transit_btn = ui.button("Powiększ", icon="open_in_full").props(
                     "flat dense no-caps"
@@ -141,6 +146,8 @@ def render_ops_focus_dashboard(
                                     for r in snap.in_transit
                                 ],
                                 "rowSelection": "multiple",
+                                "defaultColDef": grid_default_col_def(),
+                                "suppressDragLeaveHidesColumns": True,
                                 "suppressRowClickSelection": True,
                                 "domLayout": "normal",
                             }

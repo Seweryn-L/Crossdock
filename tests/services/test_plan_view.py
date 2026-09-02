@@ -8,9 +8,9 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings
+from crossdock.domain.attention import AttentionReason
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
 from crossdock.services.plan_view import (
-    REASON_ATTENTION,
     REASON_HOLDING,
     REASON_STAYING,
     build_plan_view,
@@ -82,15 +82,16 @@ def _add_order(
 
 
 def test_classify_item_buckets() -> None:
-    assert classify_item(vehicle_code="T1", sequence=1) == ("riding", "")
+    assert classify_item(vehicle_code="T1", sequence=1) == ("riding", "", None)
     assert classify_item(vehicle_code="UNASSIGNED", sequence=None) == (
         "staying",
         REASON_STAYING,
+        None,
     )
-    assert classify_item(vehicle_code="UNROUTED", sequence=None) == (
-        "attention",
-        REASON_ATTENTION,
-    )
+    bucket, reason, code = classify_item(vehicle_code="UNROUTED", sequence=None)
+    assert bucket == "attention"
+    assert code == AttentionReason.UNKNOWN
+    assert "Nieznany" in reason or "nieznany" in reason.lower()
 
 
 def test_build_plan_view_riding_and_staying(db_session: Session) -> None:
@@ -144,6 +145,7 @@ def test_build_plan_view_flags_below_min_fill(db_session: Session) -> None:
     assert view.routes
     assert view.routes[0]["below_min_fill"] is True
     assert view.routes[0]["weight_fill_pct"] == round(1500 / 12000 * 100)
+    assert view.routes[0]["fill_label"] == f"{round(1500 / 12000 * 100)}%"
 
 
 def test_thin_route_holds_when_slack_remains(db_session: Session) -> None:

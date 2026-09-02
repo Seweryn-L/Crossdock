@@ -35,15 +35,20 @@ Jeśli po spakowaniu auto miałoby więcej przystanków niż limit, zostają te 
 
 ---
 
-## 3. Dzień planowania i wyjazd przed terminem
+## 3. Terminy z importu (Pick / Drop Plan Date End)
 
-**Dzień planowania T** to sztuczne „dziś” (Ustawienia albo pole na planie). Puste = prawdziwa data kalendarzowa. **Następny dzień** przesuwa T o jeden dzień i pozwala wygenerować plan ponownie.
+Z raportu e2open importujemy **dwie daty końcowe**:
 
-Termin z Excela (albo **domyślny termin**: T + N dni, gdy w pliku nie ma daty) to dzień **u odbiorcy**. Towar musi wyjechać z magazynu wcześniej:
+| Kolumna Excel | Pole w systemie | Znaczenie |
+|---|---|---|
+| `Pick Plan Date End` | wyjechać do (`must_leave_by`) | Ostatni dzień wyjazdu z magazynu |
+| `Drop Plan Date End` | termin dostawy (`delivery_date`) | Termin dostawy u odbiorcy |
 
-- `must_leave_by = termin − wyjazd przed terminem` (domyślnie **2 dni**)
+**Luz SLA** liczymy względem dnia planowania T:
+
 - `luz = must_leave_by − T` (dni)
-- wyjazd **w dniu dostawy** nie jest legalny
+
+Gdy w imporcie brakuje `Pick Plan Date End`, system używa **fallbacku** z Ustawień: `must_leave_by = termin dostawy − N dni` (domyślnie N = 2). Gdy brak obu dat: termin dostawy = T + 7 dni, wyjazd z fallbacku.
 
 | Luz | Co się dzieje |
 |---|---|
@@ -78,7 +83,7 @@ Przy **Następny dzień** + **Generuj** niezatwierdzone 40% wraca do solvera raz
 | Ustawienie | Domyślnie | Co robi |
 |---|---|---|
 | Dzień planowania | kalendarz | Sztuczne dziś (T) do SLA, importu bez daty i bufora. |
-| Wyjazd przed terminem | 2 dni | Ostatni legalny wyjazd = termin − ta liczba. |
+| Fallback wyjazdu [dni] | 2 | Gdy brak Pick Plan Date End w imporcie: ostatni wyjazd = termin − N. |
 | Pojemność magazynu | 50 000 kg | Monitoring na Magazynie; overflow wypycha najpilniejsze. |
 | Maks. punktów rozładunku | 3 | Twardy limit przy pakowaniu. `0` wyłącza limit (ryzyko „mleczarza”). |
 | Limit czasu planowania | 45 s | Górny czas liczenia. Około 40% idzie na pakowanie, 60% na kolejność. |
@@ -110,18 +115,36 @@ To **osobna** logika na magazynie („Propozycja buforowania”), nie część *
 
 Porównanie dla zlecenia, które nie weszło do pełnego auta:
 
-- **Wysłać teraz jako drobnicę:** koszt = 2 × odległość magazyn–odbiorca × stawka €/km × **mnożnik drobnicy** (domyślnie 1,8).
-- **Przetrzymać N dni i pojechać później całym autem:** koszt magazynu (palety × dni × €/paleta/dzień) + ten sam przejazd tam i z powrotem po stawce całopojazdowej.
+- **Wysłać teraz jako drobnicę:** `K_teraz = 2 × d × s × m`
+- **Przetrzymać N dni i pojechać później całym autem:** `K_bufor(N) = (p × N × c) + (2 × d × s)`
 
-Bufor pojawia się, gdy drugi wariant jest tańszy o co najmniej **próg oszczędności** (domyślnie 15%). System szuka **najkrótszego** N od 1 do **maks. dni buforowania** (domyślnie 3), **ściętego do luzu względem `must_leave_by`** (nie względem terminu u odbiorcy). Przy luzie ≤ 0 zawsze **wyślij teraz**.
+gdzie `d` = odległość magazyn–odbiorca, `s` = stawka €/km, `m` = mnożnik drobnicy (domyślnie 1,8),
+`p` = palety (brak w danych → 1), `c` = €/paleta/dzień (domyślnie 2,00).
 
-Gdy brak liczby palet, do kosztu magazynu przyjmuje 1 paletę.
+Bufor pojawia się, gdy `K_bufor(N) ≤ K_teraz × (1 − τ)` — domyślnie τ = 15%. System szuka **najkrótszego** N od 1 do **maks. dni buforowania** (domyślnie 3), **ściętego do luzu względem `must_leave_by`** (nie względem terminu u odbiorcy). Przy luzie ≤ 0 zawsze **wyślij teraz**.
+
+**Przykład:** d = 100 km, s = 1,20, m = 1,8, p = 2 → `K_teraz` = 432 €, `K_FTL` = 240 €, przy N = 1 magazyn 4 € → `K_bufor` = 244 € (oszczędność ≈ 43,5%) → **przytrzymaj 1 dzień**.
 
 Te kwoty są **szkicem**, nie cennikiem przewoźnika.
 
 ---
 
-## 8. Czego planista nie robi
+## 8. Oszczędności w Raportach (KPI)
+
+Baseline (koszt odniesienia): scenariusz **1 zlecenie = 1 pojazd** — każde zlecenie na trasie jedzie samotnie w obie strony.
+
+- `K_odniesienia = Σ (2 × dᵢ × s)` po zleceniach na trasach (z współrzędnymi)
+- `K_plan = Σ (km_trasy × s)` — suma kosztów tras planu
+- `Oszczędność € = K_odniesienia − K_plan`
+- `Oszczędność % = (Oszczędność € / K_odniesienia) × 100`
+
+Stawka `s` = Parametry → Stawka €/km (`cost_per_km`). Zapełnienie w raporcie = waga / ładowność.
+
+**Przykład:** dwa zlecenia, d = 100 km, s = 1,20 → baseline 480 €; jedno auto (200 km) → 240 €; oszczędność 240 € (50%).
+
+---
+
+## 9. Czego planista nie robi
 
 - nie patrzy na palety ani objętość (tylko kilogramy i ładowność auta);
 - nie zna okien czasowych u odbiorcy, czasu jazdy po drogach ani tachografu;
@@ -131,7 +154,7 @@ Te kwoty są **szkicem**, nie cennikiem przewoźnika.
 
 ---
 
-## 9. Jak tym sterować w praktyce
+## 10. Jak tym sterować w praktyce
 
 - **Pokaz z danymi e2open (kwiecień 2026)** — ustaw T na kilka dni przed najwcześniejszym terminem, **Generuj**: 90%+ jedzie, ~40% czeka; **Następny dzień** i kolejne **Generuj** dokłada do tego samego miasta albo wymusza wyjazd przed terminem−2.
 - **Za dużo „dziwnych” zestawów miast na jednym aucie** — obniż limit punktów (2).
@@ -140,3 +163,22 @@ Te kwoty są **szkicem**, nie cennikiem przewoźnika.
 - **Za każdym razem inny plan** — zostaw ziarno.
 - **Za długie liczenie** — skróć limit czasu.
 - **Propozycje magazynu nie mają sensu** — stawka, mnożnik drobnicy, koszt palety/dzień, próg 15% i luz SLA.
+
+---
+
+## 11. Cykl trasy — co oznaczają statusy
+
+**Dzień planowania T** to sztuczne „dziś” (Ustawienia albo pole na planie). **Następny dzień** przesuwa T o jeden dzień.
+
+| Status trasy | Etykieta w UI | Co to znaczy operacyjnie |
+|---|---|---|
+| `proposed` | propozycja | Solver zaproponował — do decyzji |
+| `approved` | gotowa do jazdy | Plan zaakceptowany, auto zajęte, jeszcze na rampie |
+| `in_transit` | w drodze | Kierowca wyjechał (przycisk **Wyjechało**) |
+| `completed` | zrealizowana | Auto wróciło (przycisk **Zrealizowane**), pojazd wolny |
+
+Kolejność przycisków: **Zatwierdź trasę** → **Wyjechało** → **Zrealizowane**.
+
+Zrealizowane trasy **nie znikają z bazy** przy kolejnym **Generuj**, ale domyślnie są **ukryte** na Planie i Mapie (filtr „Pokaż zrealizowane” / „Bieżące”). Panel **Trasy w drodze** pokazuje tylko status `in_transit`.
+
+Na liście **Zleceń** domyślnie widać aktywne rekordy (bez zrealizowanych); kolumny **Termin dostawy** i **Wyjechać do** pochodzą wprost z importu TMS.

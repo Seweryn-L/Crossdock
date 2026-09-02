@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import effective_planning_date, get_settings
 from crossdock.domain.models import Order, OrderStatus
-from crossdock.domain.sla import must_leave_by, slack_days
+from crossdock.domain.sla import resolve_must_leave_by, slack_days_for_order
 from crossdock.storage.repositories import (
     AuditLogRepository,
     OrderRepository,
@@ -37,7 +37,7 @@ def list_queue(session: Session) -> list[QueueEntry]:
     entries: list[QueueEntry] = []
     for row in repo.list_ordered():
         order = orders.get_by_id(row.order_id)
-        if order is None:
+        if order is None or order.status == OrderStatus.DELIVERED:
             continue
         entries.append(_to_entry(row.position, row.status, row.note, order))
     return entries
@@ -175,8 +175,17 @@ def _to_entry(position: int, status: str, note: str | None, order: Order) -> Que
         settings = get_settings()
         day = effective_planning_date(settings)
         lead = settings.ship_lead_days
-        leave = must_leave_by(order.delivery_date, lead)
-        slack = slack_days(order.delivery_date, day, lead)
+        leave = resolve_must_leave_by(
+            delivery_date=order.delivery_date,
+            must_leave_by_imported=order.must_leave_by,
+            ship_lead_days=lead,
+        )
+        slack = slack_days_for_order(
+            must_leave_by=order.must_leave_by,
+            delivery_date=order.delivery_date,
+            planning_date=day,
+            ship_lead_days=lead,
+        )
     except Exception:
         pass
     return QueueEntry(

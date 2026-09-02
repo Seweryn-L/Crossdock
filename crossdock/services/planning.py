@@ -12,8 +12,9 @@ from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.distance.factory import get_distance_provider
 from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.distance.ports import DistanceProvider
+from crossdock.domain.attention import resolve_attention_reason
 from crossdock.domain.models import Location, Order, OrderStatus, Vehicle
-from crossdock.domain.sla import is_overdue, slack_days
+from crossdock.domain.sla import is_overdue, slack_days_for_order
 from crossdock.optimization.assignment import solve_assignment
 from crossdock.optimization.dto import (
     AssignmentRequest,
@@ -73,6 +74,13 @@ class UnlockOutcome:
 class CompleteRouteOutcome:
     run_id: int
     delivered_order_ids: tuple[int, ...]
+    vehicle_id: int
+    vehicle_code: str
+
+
+@dataclass(frozen=True)
+class DepartRouteOutcome:
+    run_id: int
     vehicle_id: int
     vehicle_code: str
 
@@ -178,7 +186,12 @@ def orders_to_solver(
             continue
         slack = None
         if planning_date is not None:
-            slack = slack_days(order.delivery_date, planning_date, ship_lead_days)
+            slack = slack_days_for_order(
+                must_leave_by=order.must_leave_by,
+                delivery_date=order.delivery_date,
+                planning_date=planning_date,
+                ship_lead_days=ship_lead_days,
+            )
         must = order.id in forced or (slack is not None and slack <= 0)
         solver_orders.append(
             SolverOrder(
@@ -422,7 +435,9 @@ def assemble_prepared_plan(
 
     routed_ids = set(sequence_by_order)
     no_coords_ids = set(bundle.no_coords_ids)
-    unrouted_ids = set(routing.unrouted_order_ids) | no_coords_ids
+    routing_unrouted = set(routing.unrouted_order_ids)
+    trimmed_ids = set(routing.trimmed_order_ids)
+    unrouted_ids = routing_unrouted | no_coords_ids
     unassigned_ids = list(assignment.unassigned_order_ids)
 
     items: list[dict[str, Any]] = []
@@ -449,6 +464,12 @@ def assemble_prepared_plan(
                         "fill_ratio": fill_by_vehicle.get(load.vehicle_id),
                         "sequence": None,
                         "drop_key": None,
+                        "attention_reason": resolve_attention_reason(
+                            oid,
+                            no_coords_ids=no_coords_ids,
+                            trimmed_ids=trimmed_ids,
+                            unrouted_ids=routing_unrouted,
+                        ),
                     }
                 )
 
@@ -611,7 +632,15 @@ class PlanningService:
         for order in orders:
             if order.id is None:
                 continue
-            if slack_days(order.delivery_date, planning, lead) <= 0:
+            if (
+                slack_days_for_order(
+                    must_leave_by=order.must_leave_by,
+                    delivery_date=order.delivery_date,
+                    planning_date=planning,
+                    ship_lead_days=lead,
+                )
+                <= 0
+            ):
                 forced.add(order.id)
         capacity = float(self._settings.warehouse_capacity_kg)
         if capacity > 0:
@@ -625,7 +654,12 @@ class PlanningService:
                     optionals = [o for o in orders if o.id is not None and o.id not in forced]
                     optionals.sort(
                         key=lambda o: (
-                            slack_days(o.delivery_date, planning, lead),
+                            slack_days_for_order(
+                                must_leave_by=o.must_leave_by,
+                                delivery_date=o.delivery_date,
+                                planning_date=planning,
+                                ship_lead_days=lead,
+                            ),
                             -(o.total_weight_kg or 0.0),
                         )
                     )
@@ -771,7 +805,8 @@ class PlanningService:
             approved_vehicle_ids = {
                 r.vehicle_id
                 for r in repo.list_routes_for_run(target.id)
-                if r.route_status == "approved" and r.vehicle_id is not None
+                if r.route_status in {"approved", "in_transit", "completed"}
+                and r.vehicle_id is not None
             }
             for item in repo.list_items_for_run(target.id):
                 keep = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
@@ -1049,9 +1084,10 @@ class PlanningService:
         for route in repo.list_routes_for_run(run_id):
             if route.vehicle_code in send_codes:
                 route.route_status = "approved"
+                route.approved_at = datetime.now()
                 if route.vehicle_id is not None:
                     vehicle_repo.set_busy(route.vehicle_id, True)
-            elif route.route_status != "approved":
+            elif route.route_status not in {"approved", "in_transit", "completed"}:
                 any_hold = True
 
         if any_hold:
@@ -1083,6 +1119,8 @@ class PlanningService:
             raise ValueError("Nie znaleziono trasy dla zaznaczonego pojazdu.")
         if route.route_status == "completed":
             raise ValueError(f"Trasa {route.vehicle_code} jest już zrealizowana.")
+        if route.route_status == "in_transit":
+            raise ValueError(f"Trasa {route.vehicle_code} jest już w drodze.")
         if route.route_status == "approved":
             raise ValueError(f"Trasa {route.vehicle_code} jest już zatwierdzona.")
         items = [
@@ -1102,6 +1140,7 @@ class PlanningService:
             order_repo.set_status_many(approved, OrderStatus.APPROVED)
         dequeued = self._dequeue_orders(approved)
         route.route_status = "approved"
+        route.approved_at = datetime.now()
         VehicleRepository(self._session).set_busy(vehicle_id, True)
         self._sync_plan_status_from_routes(run_id, username=username)
         AuditLogRepository(self._session).record(
@@ -1153,6 +1192,8 @@ class PlanningService:
         if reset:
             order_repo.set_status_many(reset, OrderStatus.NEW)
         route.route_status = "proposed"
+        route.approved_at = None
+        route.departed_at = None
         VehicleRepository(self._session).set_busy(vehicle_id, False)
         self._sync_plan_status_from_routes(run_id, username=username)
         AuditLogRepository(self._session).record(
@@ -1173,6 +1214,41 @@ class PlanningService:
             vehicle_code=route.vehicle_code,
         )
 
+    def depart_route(self, *, run_id: int, vehicle_id: int, username: str) -> DepartRouteOutcome:
+        repo = AssignmentRepository(self._session)
+        run = repo.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Plan run #{run_id} nie istnieje.")
+        route = next(
+            (r for r in repo.list_routes_for_run(run_id) if r.vehicle_id == vehicle_id),
+            None,
+        )
+        if route is None:
+            raise ValueError("Nie znaleziono trasy dla zaznaczonego pojazdu.")
+        if route.route_status == "completed":
+            raise ValueError(f"Trasa {route.vehicle_code} jest już zrealizowana.")
+        if route.route_status == "in_transit":
+            raise ValueError(f"Trasa {route.vehicle_code} jest już w drodze.")
+        if route.route_status != "approved":
+            raise ValueError("Wyjechać może tylko trasa gotowa do jazdy (zatwierdzona).")
+        route.route_status = "in_transit"
+        route.departed_at = datetime.now()
+        self._sync_plan_status_from_routes(run_id, username=username)
+        AuditLogRepository(self._session).record(
+            username=username,
+            action="planning.depart_route",
+            details={
+                "run_id": run_id,
+                "vehicle_id": vehicle_id,
+                "vehicle_code": route.vehicle_code,
+            },
+        )
+        return DepartRouteOutcome(
+            run_id=run_id,
+            vehicle_id=vehicle_id,
+            vehicle_code=route.vehicle_code,
+        )
+
     def complete_route(
         self, *, run_id: int, vehicle_id: int, username: str
     ) -> CompleteRouteOutcome:
@@ -1188,8 +1264,8 @@ class PlanningService:
             raise ValueError("Nie znaleziono trasy dla zaznaczonego pojazdu.")
         if route.route_status == "completed":
             raise ValueError(f"Trasa {route.vehicle_code} jest już zrealizowana.")
-        if route.route_status != "approved":
-            raise ValueError("Zrealizować można tylko zatwierdzoną trasę.")
+        if route.route_status != "in_transit":
+            raise ValueError("Zrealizować można tylko trasę w drodze (najpierw „Wyjechało”).")
         order_repo = OrderRepository(self._session)
         delivered: list[int] = []
         for item in repo.list_items_for_run(run_id):
@@ -1204,6 +1280,7 @@ class PlanningService:
             order_repo.set_status_many(delivered, OrderStatus.DELIVERED)
         dequeued = self._dequeue_orders(delivered)
         route.route_status = "completed"
+        route.completed_at = datetime.now()
         VehicleRepository(self._session).set_busy(vehicle_id, False)
         self._sync_plan_status_from_routes(run_id, username=username)
         AuditLogRepository(self._session).record(
@@ -1235,15 +1312,16 @@ class PlanningService:
 
     def _reset_proposed_orders_to_new(self, run_id: int) -> list[int]:
         repo = AssignmentRepository(self._session)
-        approved_vehicle_ids = {
+        protected_vehicle_ids = {
             r.vehicle_id
             for r in repo.list_routes_for_run(run_id)
-            if r.route_status in {"approved", "completed"} and r.vehicle_id is not None
+            if r.route_status in {"approved", "in_transit", "completed"}
+            and r.vehicle_id is not None
         }
         order_repo = OrderRepository(self._session)
         reset: list[int] = []
         for item in repo.list_items_for_run(run_id):
-            keep = item.vehicle_id in approved_vehicle_ids and item.vehicle_code not in {
+            keep = item.vehicle_id in protected_vehicle_ids and item.vehicle_code not in {
                 "UNASSIGNED",
                 "UNROUTED",
             }
@@ -1263,12 +1341,12 @@ class PlanningService:
             repo.set_run_status(run_id, plan_status="draft")
             return
         statuses = {r.route_status for r in routes}
-        closed = {"approved", "completed"}
+        closed = {"approved", "in_transit", "completed"}
         if statuses <= closed:
             run = repo.get_run(run_id)
             if run is not None and run.plan_status != "approved":
                 repo.approve_run(run_id, username=username)
-        elif "approved" in statuses or "completed" in statuses:
+        elif statuses & closed:
             repo.set_run_status(run_id, plan_status="partial")
         else:
             repo.set_run_status(run_id, plan_status="draft")

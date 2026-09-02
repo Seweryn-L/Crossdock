@@ -16,7 +16,8 @@
     "delivery_country": "Destination Country",
     "delivery_postal_code": "Destination Postal Code",
     "weight_kg": "Product Weight",
-    "delivery_date": "Drop Plan Date Start",
+    "delivery_date": "Drop Plan Date End",
+    "must_leave_by": "Pick Plan Date End",
     "equipment_type": "Equipment"
   },
   "equipment_aliases": {

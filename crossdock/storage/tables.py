@@ -51,6 +51,7 @@ class OrderRow(Base):
     delivery_latitude: Mapped[float | None]
     delivery_longitude: Mapped[float | None]
     delivery_date: Mapped[date] = mapped_column(Date)
+    must_leave_by: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="new")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -159,6 +160,7 @@ class AssignmentItemRow(Base):
     fill_ratio: Mapped[float | None]
     sequence: Mapped[int | None]
     drop_key: Mapped[str | None] = mapped_column(String(200))
+    attention_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     run: Mapped[AssignmentRunRow] = relationship(back_populates="items")
 
@@ -176,6 +178,9 @@ class AssignmentRouteRow(Base):
     distance_km: Mapped[float]
     cost_eur: Mapped[float]
     route_status: Mapped[str] = mapped_column(String(20), default="proposed")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    departed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Optional road geometry from OSRM /route: JSON list of [lat, lon] pairs.
     polyline_json: Mapped[str | None] = mapped_column(String, nullable=True)
 

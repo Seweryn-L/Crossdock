@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
-from crossdock.domain.sla import is_overdue, slack_days
+from crossdock.domain.sla import is_overdue, slack_days_for_order
 from crossdock.services.plan_view import build_plan_view
 from crossdock.services.planning import PlanningService, orders_to_solver
 from crossdock.services.warehouse_queue import enqueue_order
@@ -178,7 +178,12 @@ def test_orders_to_solver_stamps_overdue_when_past_leave_day() -> None:
         status=OrderStatus.NEW,
     )
     planning = date(2026, 8, 1)
-    slack = slack_days(order.delivery_date, planning, 2)
+    slack = slack_days_for_order(
+        must_leave_by=order.must_leave_by,
+        delivery_date=order.delivery_date,
+        planning_date=planning,
+        ship_lead_days=2,
+    )
     assert is_overdue(slack)
     solver, skipped = orders_to_solver([order], planning_date=planning, ship_lead_days=2)
     assert skipped == []

@@ -23,6 +23,8 @@ from crossdock.services.app_settings import (
 from crossdock.services.backup import run_backup
 from crossdock.services.buffering import accept_buffer_proposals, compute_buffer_proposals
 from crossdock.services.dashboard import collect_dashboard
+from crossdock.services.generation_compare import compare_generations
+from crossdock.services.generation_kpi import GenerationKpi, build_generation_kpi
 from crossdock.services.import_orders import ImportOrdersService, ImportOutcome
 from crossdock.services.locations import (
     apply_coords_to_existing_orders,
@@ -31,7 +33,6 @@ from crossdock.services.locations import (
     seed_location_coords,
     upsert_location,
 )
-from crossdock.services.map_arrows import leg_arrows
 from crossdock.services.map_view import MapPlanView, MapViewService, VehicleMapRoute
 from crossdock.services.orders import (
     OrderCounts,
@@ -40,7 +41,7 @@ from crossdock.services.orders import (
     order_counts,
     update_approved_pallets,
 )
-from crossdock.services.plan_view import PlanView, build_plan_view, list_in_transit_routes
+from crossdock.services.plan_view import PlanView, build_plan_view, list_departure_routes
 from crossdock.services.planning import (
     AssignmentStageResult,
     PlanningService,
@@ -53,7 +54,14 @@ from crossdock.services.planning import (
     solve_assignment_stage,
     solve_routes_stage,
 )
-from crossdock.services.reports import ReportBundle, build_report, export_report_xlsx
+from crossdock.services.report_export_options import ReportExportSelection
+from crossdock.services.reports import (
+    ReportBundle,
+    build_report,
+    build_report_xlsx_data,
+    export_report_xlsx,
+    report_export_filename,
+)
 from crossdock.services.system_status import (
     LOG_FULL_BYTES,
     LOG_PREVIEW_BYTES,
@@ -77,10 +85,13 @@ from crossdock.storage.repositories import (
     OrderRepository,
     VehicleRepository,
 )
+from crossdock.text_pl import route_action_error_pl
+from crossdock.ui.generation_kpi import GenerationComparePanel, GenerationKpiPanel
 from crossdock.ui.labels import (
     APPROVE_ROUTE_HINT,
     COMPLETE_ROUTE_HINT,
     DELETE_RUN_HINT,
+    DEPART_ROUTE_HINT,
     GENERATE_PROTECT_HINT,
     PLAN_NAME_MAX_LEN,
     UNLOCK_ROUTE_HINT,
@@ -91,17 +102,22 @@ from crossdock.ui.labels import (
     route_status_pl,
 )
 from crossdock.ui.layout import ops_page_header, page_frame
-from crossdock.ui.map_leaflet_js import (
-    arrows_javascript,
-    bind_route_overlays_javascript,
-    clear_arrows_javascript,
-    invalidate_map_javascript,
+from crossdock.ui.map_leaflet_js import invalidate_map_javascript
+from crossdock.ui.report_builder import ReportBuilderDialog
+from crossdock.ui.settings_params import (
+    INT_PARAM_KEYS,
+    PARAM_META,
+    TIER_FIELD_ORDER,
+    TIER_TITLES_PL,
 )
 from crossdock.ui.widgets import (
     attach_element_enlarge,
     attach_grid_enlarge,
     enlarge_grid_button,
+    grid_default_col_def,
     info_hint,
+    notify_once,
+    notify_route_batch_results,
     selection_column,
 )
 
@@ -132,6 +148,9 @@ def _orders_to_grid_rows(orders: list[Order]) -> list[dict[str, object]]:
                 "delivery_name": order.delivery_location.name,
                 "delivery_city": order.delivery_location.city or "",
                 "delivery_date": order.delivery_date.isoformat(),
+                "must_leave_by": (
+                    order.must_leave_by.isoformat() if order.must_leave_by is not None else "—"
+                ),
                 "status": order_status_pl(order.status.value),
                 "status_code": order.status.value,
                 "shipments": len(order.shipments),
@@ -224,7 +243,12 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
         route_counts = (
             AssignmentRepository(session).count_routes_by_status(resolved)
             if resolved is not None
-            else {"proposed": 0, "approved": 0, "completed": 0}
+            else {"proposed": 0, "approved": 0, "in_transit": 0, "completed": 0}
+        )
+        protected = (
+            int(route_counts.get("approved", 0))
+            + int(route_counts.get("in_transit", 0))
+            + int(route_counts.get("completed", 0))
         )
         return {
             "total_orders": counts.total,
@@ -252,8 +276,7 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
             "total_distance_km": run.total_distance_km if run else None,
             "total_cost_eur": run.total_cost_eur if run else None,
             "route_counts": route_counts,
-            "protected_routes": int(route_counts.get("approved", 0))
-            + int(route_counts.get("completed", 0)),
+            "protected_routes": protected,
         }
 
 
@@ -279,6 +302,14 @@ def _complete_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[in
             run_id=run_id, vehicle_id=vehicle_id, username=username
         )
         return outcome.run_id, len(outcome.delivered_order_ids), outcome.vehicle_code or "?"
+
+
+def _depart_route_job(run_id: int, vehicle_id: int, username: str) -> tuple[int, str]:
+    with session_scope() as session:
+        outcome = PlanningService(session).depart_route(
+            run_id=run_id, vehicle_id=vehicle_id, username=username
+        )
+        return outcome.run_id, outcome.vehicle_code or "?"
 
 
 def _import_upload(path: Path, username: str) -> ImportOutcome:
@@ -353,9 +384,24 @@ def _load_dashboard(run_id: int | None = None):
         return collect_dashboard(session, run_id=run_id)
 
 
-def _load_latest_plan_view(run_id: int | None = None) -> PlanView:
+def _load_generation_kpi(run_id: int | None = None) -> GenerationKpi | None:
     with session_scope() as session:
-        return build_plan_view(session, run_id=run_id)
+        resolved = PlanningService(session).resolve_run_id(run_id)
+        if resolved is None:
+            return None
+        return build_generation_kpi(session, run_id=resolved)
+
+
+def _compare_generations_job(run_a: int, run_b: int):
+    with session_scope() as session:
+        return compare_generations(session, run_a, run_b)
+
+
+def _load_latest_plan_view(
+    run_id: int | None = None, *, include_completed: bool = False
+) -> PlanView:
+    with session_scope() as session:
+        return build_plan_view(session, run_id=run_id, include_completed=include_completed)
 
 
 def _enqueue_staying_job(order_ids: list[int], username: str) -> int:
@@ -691,7 +737,13 @@ async def orders_page() -> None:
                             {"headerName": "Odbiorca", "field": "delivery_name", "filter": True},
                             {"headerName": "Miasto", "field": "delivery_city", "filter": True},
                             {
-                                "headerName": "Termin",
+                                "headerName": "Wyjazd do",
+                                "field": "must_leave_by",
+                                "filter": True,
+                                "sortable": True,
+                            },
+                            {
+                                "headerName": "Termin dostawy",
                                 "field": "delivery_date",
                                 "filter": True,
                                 "sortable": True,
@@ -702,7 +754,7 @@ async def orders_page() -> None:
                             {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
                         ],
                         "rowData": [],
-                        "defaultColDef": {"sortable": True, "resizable": True},
+                        "defaultColDef": grid_default_col_def(),
                         "rowSelection": "multiple",
                         "suppressRowClickSelection": True,
                         "domLayout": "normal",
@@ -767,48 +819,53 @@ async def orders_page() -> None:
             await sync_toolbar(counts, len(orders))
 
         async def handle_upload(e: ui.events.UploadEventArguments) -> None:
-            settings = get_settings()
-            content = await e.file.read()
-            max_bytes = settings.upload_max_mb * 1024 * 1024
-            if len(content) > max_bytes:
-                ui.notify(
-                    f"Plik za duży (limit {settings.upload_max_mb} MB).",
-                    type="negative",
+            try:
+                settings = get_settings()
+                content = await e.file.read()
+                max_bytes = settings.upload_max_mb * 1024 * 1024
+                if len(content) > max_bytes:
+                    ui.notify(
+                        f"Plik za duży (limit {settings.upload_max_mb} MB).",
+                        type="negative",
+                    )
+                    return
+                suffix = Path(e.file.name or "upload.xlsx").suffix or ".xlsx"
+
+                def _write_and_import() -> ImportOutcome:
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                        tmp.write(content)
+                        tmp_path = Path(tmp.name)
+                    try:
+                        return _import_upload(tmp_path, username)
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
+
+                outcome = await run.io_bound(_write_and_import)
+                skipped_n = len(outcome.skipped)
+                rejected_n = len(outcome.rejected)
+                missing_n = len(outcome.missing_from_file)
+                app.storage.user["last_import"] = {
+                    "accepted": outcome.accepted_count,
+                    "rejected": rejected_n,
+                    "skipped": skipped_n,
+                    "missing": missing_n,
+                    "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+                toast_type = (
+                    "positive"
+                    if rejected_n == 0 and skipped_n == 0 and missing_n == 0
+                    else "warning"
                 )
-                return
-            suffix = Path(e.file.name or "upload.xlsx").suffix or ".xlsx"
-
-            def _write_and_import() -> ImportOutcome:
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp.write(content)
-                    tmp_path = Path(tmp.name)
-                try:
-                    return _import_upload(tmp_path, username)
-                finally:
-                    tmp_path.unlink(missing_ok=True)
-
-            outcome = await run.io_bound(_write_and_import)
-            skipped_n = len(outcome.skipped)
-            rejected_n = len(outcome.rejected)
-            missing_n = len(outcome.missing_from_file)
-            app.storage.user["last_import"] = {
-                "accepted": outcome.accepted_count,
-                "rejected": rejected_n,
-                "skipped": skipped_n,
-                "missing": missing_n,
-                "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            }
-            toast_type = (
-                "positive" if rejected_n == 0 and skipped_n == 0 and missing_n == 0 else "warning"
-            )
-            ui.notify(
-                f"Przyjęto {outcome.accepted_count}, pominięto {skipped_n}, "
-                f"brak w pliku {missing_n}, błędy {rejected_n}",
-                type=toast_type,
-            )
-            if skipped_n > 0 or rejected_n > 0 or missing_n > 0 or outcome.warnings:
-                _open_import_result_dialog(outcome)
-            await refresh_grid()
+                ui.notify(
+                    f"Przyjęto {outcome.accepted_count}, pominięto {skipped_n}, "
+                    f"brak w pliku {missing_n}, błędy {rejected_n}",
+                    type=toast_type,
+                )
+                if skipped_n > 0 or rejected_n > 0 or missing_n > 0 or outcome.warnings:
+                    _open_import_result_dialog(outcome)
+                await refresh_grid()
+            finally:
+                upload.reset()
 
         async def on_delete_selected() -> None:
             selected = await grid.get_selected_rows()
@@ -929,6 +986,11 @@ async def plans_page() -> None:
                 value = ui.label("—").classes("cd-plan-chip-v")
             return wrap, value
 
+        kpi_host = ui.element("div").classes("w-full cd-gen-kpi-wrap mb-2")
+        kpi_panel = GenerationKpiPanel(kpi_host)
+        attention_filter_code: dict[str, str | None] = {"code": None}
+        all_attention_rows: list[dict[str, object]] = []
+
         with ui.element("div").classes("cd-plan-meta"):
             _, chip_orders = _plan_chip("Zlecenia w bazie")
             _, chip_eligible = _plan_chip("Do planowania")
@@ -961,6 +1023,8 @@ async def plans_page() -> None:
                 approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
                     "color=positive outline"
                 )
+                depart_route_btn = ui.button("Wyjechało", icon="local_shipping").props("outline")
+                info_hint(DEPART_ROUTE_HINT)
                 complete_route_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
                 info_hint(COMPLETE_ROUTE_HINT)
                 unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
@@ -1073,6 +1137,10 @@ async def plans_page() -> None:
                     enlarge_routes_btn = ui.button("Powiększ", icon="open_in_full").props(
                         "flat dense no-caps"
                     )
+                    show_completed_cb = ui.checkbox(
+                        "Pokaż zrealizowane",
+                        value=bool(app.storage.user.get("plans_show_completed")),
+                    ).props("dense")
                 with (
                     ui.element("div")
                     .classes("p-3 w-full gap-2")
@@ -1101,10 +1169,22 @@ async def plans_page() -> None:
                                             "filter": True,
                                         },
                                         {
+                                            "headerName": "Zapełnienie",
+                                            "field": "fill_label",
+                                            "sortable": True,
+                                            "width": 118,
+                                        },
+                                        {
                                             "headerName": "Do wysłania",
                                             "field": "deadline_label",
                                             "sortable": True,
                                             "width": 118,
+                                        },
+                                        {
+                                            "headerName": "Luz [dni]",
+                                            "field": "min_slack",
+                                            "sortable": True,
+                                            "width": 100,
                                         },
                                         {
                                             "headerName": "Punkty rozładunku",
@@ -1122,12 +1202,6 @@ async def plans_page() -> None:
                                             "sortable": True,
                                         },
                                         {
-                                            "headerName": "Zapełnienie wag. %",
-                                            "field": "weight_fill_pct",
-                                            "sortable": True,
-                                            "width": 140,
-                                        },
-                                        {
                                             "headerName": "Decyzja",
                                             "field": "sla_label",
                                             "filter": True,
@@ -1137,10 +1211,11 @@ async def plans_page() -> None:
                                     "rowData": [],
                                     "rowSelection": "multiple",
                                     "suppressRowClickSelection": True,
-                                    "defaultColDef": {"sortable": True, "resizable": True},
+                                    "defaultColDef": grid_default_col_def(),
                                     "domLayout": "normal",
                                     "rowClassRules": {
                                         "cd-row-approved": "data.route_status === 'approved'",
+                                        "cd-row-intransit": "data.route_status === 'in_transit'",
                                         "cd-row-completed": "data.route_status === 'completed'",
                                         "cd-row-proposed": "data.route_status === 'proposed'",
                                         "cd-row-lowfill": "data.below_min_fill === true",
@@ -1167,6 +1242,11 @@ async def plans_page() -> None:
                                 icon="check_circle",
                                 on_click=lambda: on_approve_route(),
                             ).props("color=positive outline")
+                            ui.button(
+                                "Wyjechało",
+                                icon="local_shipping",
+                                on_click=lambda: on_depart_route(),
+                            ).props("outline")
                             ui.button(
                                 "Zrealizowane",
                                 icon="done",
@@ -1234,10 +1314,8 @@ async def plans_page() -> None:
                                         {
                                             "columnDefs": riding_cols,
                                             "rowData": [],
-                                            "defaultColDef": {
-                                                "sortable": True,
-                                                "resizable": True,
-                                            },
+                                            "defaultColDef": grid_default_col_def(),
+                                            "suppressDragLeaveHidesColumns": True,
                                             "domLayout": "normal",
                                         }
                                     )
@@ -1276,10 +1354,8 @@ async def plans_page() -> None:
                                         {
                                             "columnDefs": stay_cols,
                                             "rowData": [],
-                                            "defaultColDef": {
-                                                "sortable": True,
-                                                "resizable": True,
-                                            },
+                                            "defaultColDef": grid_default_col_def(),
+                                            "suppressDragLeaveHidesColumns": True,
                                             "domLayout": "normal",
                                         }
                                     )
@@ -1314,10 +1390,8 @@ async def plans_page() -> None:
                                         {
                                             "columnDefs": stay_cols,
                                             "rowData": [],
-                                            "defaultColDef": {
-                                                "sortable": True,
-                                                "resizable": True,
-                                            },
+                                            "defaultColDef": grid_default_col_def(),
+                                            "suppressDragLeaveHidesColumns": True,
                                             "domLayout": "normal",
                                         }
                                     )
@@ -1332,6 +1406,23 @@ async def plans_page() -> None:
                                     compact_height="260px",
                                 )
                             )
+
+        def _apply_attention_filter() -> None:
+            code = attention_filter_code["code"]
+            if code:
+                filtered = [r for r in all_attention_rows if r.get("reason_code") == code]
+            else:
+                filtered = all_attention_rows
+            attention_grid.options["rowData"] = filtered
+            attention_grid.update()
+            attention_empty.set_visibility(len(filtered) == 0)
+
+        def _on_attention_reason_click(code: str) -> None:
+            attention_filter_code["code"] = code
+            tabs.value = tab_attention
+            _apply_attention_filter()
+
+        kpi_panel.on_reason_click(_on_attention_reason_click)
 
         async def sync_planning_state(ctx_now: dict[str, object], result_text: str = "") -> None:
             nonlocal updating_plan_select
@@ -1411,6 +1502,7 @@ async def plans_page() -> None:
                 approve_route_btn.disable()
             if has_run:
                 unlock_route_btn.enable()
+                depart_route_btn.enable()
                 complete_route_btn.enable()
                 unlock_btn.enable()
                 delete_plan_btn.enable()
@@ -1418,6 +1510,7 @@ async def plans_page() -> None:
                 rename_btn.enable()
             else:
                 unlock_route_btn.disable()
+                depart_route_btn.disable()
                 complete_route_btn.disable()
                 unlock_btn.disable()
                 delete_plan_btn.disable()
@@ -1428,7 +1521,7 @@ async def plans_page() -> None:
                 result_label.set_visibility(True)
 
         async def refresh_plan_view() -> None:
-            nonlocal ctx, staying_ids
+            nonlocal ctx, staying_ids, all_attention_rows
             preferred = _active_run_id_from_storage()
             ctx = await run.io_bound(_load_planning_context, preferred)
             resolved = ctx.get("latest_run_id")
@@ -1436,6 +1529,7 @@ async def plans_page() -> None:
             view = await run.io_bound(
                 _load_latest_plan_view,
                 int(resolved) if isinstance(resolved, int) else None,
+                include_completed=bool(show_completed_cb.value),
             )
             if view.summary is None:
                 staying_ids = []
@@ -1447,6 +1541,7 @@ async def plans_page() -> None:
                 attention_wrap.set_visibility(False)
                 km_wrap.set_visibility(False)
                 cost_wrap.set_visibility(False)
+                kpi_panel.update(None)
             else:
                 staying_ids = list(view.staying_order_ids)
                 if staying_ids:
@@ -1472,6 +1567,11 @@ async def plans_page() -> None:
                     chip_cost.set_text(f"{view.summary.total_cost_eur:.0f} €")
                 else:
                     cost_wrap.set_visibility(False)
+                kpi = await run.io_bound(
+                    _load_generation_kpi,
+                    int(resolved) if isinstance(resolved, int) else None,
+                )
+                kpi_panel.update(kpi)
             routes_grid.options["rowData"] = view.routes
             routes_grid.update()
             hold_n = sum(1 for row in view.routes if row.get("disposition") == "hold")
@@ -1507,9 +1607,8 @@ async def plans_page() -> None:
             staying_grid.options["rowData"] = view.staying
             staying_grid.update()
             staying_empty.set_visibility(len(view.staying) == 0)
-            attention_grid.options["rowData"] = view.attention
-            attention_grid.update()
-            attention_empty.set_visibility(len(view.attention) == 0)
+            all_attention_rows = list(view.attention)
+            _apply_attention_filter()
             tab_riding.set_label(f"Jedzie ({len(view.riding)})")
             tab_staying.set_label(f"Zostaje w magazynie ({len(view.staying)})")
             tab_attention.set_label(f"Wymaga uwagi ({len(view.attention)})")
@@ -1725,6 +1824,39 @@ async def plans_page() -> None:
                 )
             await refresh_plan_view()
 
+        async def on_depart_route() -> None:
+            run_id = ctx.get("latest_run_id")
+            if run_id is None:
+                ui.notify("Brak planu.", type="warning")
+                return
+            vehicle_ids = await _selected_route_vehicle_ids()
+            if not vehicle_ids:
+                ui.notify("Zaznacz co najmniej jedną trasę w tabeli.", type="warning")
+                return
+            results: list[tuple[int, str]] = []
+            errors: list[str] = []
+            for vehicle_id in vehicle_ids:
+                try:
+                    results.append(
+                        await run.io_bound(_depart_route_job, int(run_id), vehicle_id, username)
+                    )
+                except Exception as exc:
+                    errors.append(f"pojazd {vehicle_id}: {exc}")
+            if not results:
+                ui.notify("Nie udało się oznaczyć wyjazdu: " + "; ".join(errors), type="negative")
+                return
+            if len(results) == 1:
+                rid, code = results[0]
+                ui.notify(f"Wyjechało: {code} (generacja #{rid}).", type="positive")
+            else:
+                display = ", ".join(code for _, code in results[:5])
+                if len(results) > 5:
+                    display += "..."
+                ui.notify(f"W drodze: {len(results)} tras ({display}).", type="positive")
+            if errors:
+                ui.notify("Część tras: " + "; ".join(errors[:3]), type="warning")
+            await refresh_plan_view()
+
         async def on_complete_route() -> None:
             run_id = ctx.get("latest_run_id")
             if run_id is None:
@@ -1919,12 +2051,19 @@ async def plans_page() -> None:
         generate_btn.on_click(on_generate)
         approve_btn.on_click(on_approve)
         approve_route_btn.on_click(on_approve_route)
+        depart_route_btn.on_click(on_depart_route)
         complete_route_btn.on_click(on_complete_route)
         unlock_route_btn.on_click(on_unlock_route)
         unlock_btn.on_click(on_unlock)
         delete_plan_btn.on_click(on_delete_plan)
         map_btn.on_click(on_show_map)
         enqueue_staying_btn.on_click(on_enqueue_staying)
+
+        async def on_show_completed_toggle(_e=None) -> None:
+            app.storage.user["plans_show_completed"] = bool(show_completed_cb.value)
+            await refresh_plan_view()
+
+        show_completed_cb.on_value_change(on_show_completed_toggle)
         await refresh_plan_view()
 
 
@@ -1998,9 +2137,22 @@ def _load_generation_history(limit: int = 30) -> list[dict[str, object]]:
         return out
 
 
-def _map_route_arrows(route: VehicleMapRoute) -> list[dict[str, float | str]]:
-    waypoints = route.waypoints or tuple(route.polyline)
-    return leg_arrows(route.polyline, waypoints, color=route.color, arrows_per_leg=1)
+def _map_polyline_options(route: VehicleMapRoute, *, isolated: bool) -> dict[str, object]:
+    """Line weight/opacity by route lifecycle — proposed uses approved weight but dashed."""
+    status = route.route_status
+    if isolated:
+        return {"weight": 9, "opacity": 1.0, "dashArray": None}
+    if status == "in_transit":
+        return {"weight": 8, "opacity": 1.0, "dashArray": None}
+    if status == "completed":
+        return {"weight": 7, "opacity": 0.92, "dashArray": None}
+    if status == "approved":
+        return {"weight": 6, "opacity": 1.0, "dashArray": None}
+    return {"weight": 6, "opacity": 1.0, "dashArray": "12 24"}
+
+
+def _map_legend_swatch_opacity(route_status: str) -> str:
+    return ""
 
 
 def _visible_map_routes(
@@ -2012,7 +2164,10 @@ def _visible_map_routes(
 ) -> list[VehicleMapRoute]:
     out: list[VehicleMapRoute] = []
     for route in view.routes:
-        if status_filter and route.route_status != status_filter:
+        if status_filter == "__open__":
+            if route.route_status == "completed":
+                continue
+        elif status_filter and route.route_status != status_filter:
             continue
         if route.vehicle_code in hidden:
             continue
@@ -2050,16 +2205,12 @@ async def map_page(run_id: int | None = None) -> None:
         )
         raw_iso = app.storage.user.get("map_isolated")
         isolated_code: str | None = str(raw_iso) if raw_iso else None
-        status_filter = str(app.storage.user.get("map_status_filter") or "")
-        show_arrows = app.storage.user.get("map_show_arrows")
-        if not isinstance(show_arrows, bool):
-            show_arrows = True
+        status_filter = str(app.storage.user.get("map_status_filter") or "__open__")
 
         state: dict[str, object] = {
             "status_filter": status_filter,
             "isolated": isolated_code,
             "hidden": hidden_codes,
-            "show_arrows": show_arrows,
         }
         vehicle_checks: dict[str, ui.checkbox] = {}
         legend_rows: dict[str, ui.element] = {}
@@ -2068,9 +2219,11 @@ async def map_page(run_id: int | None = None) -> None:
         suppress_events = {"v": True}
 
         status_options = {
+            "__open__": "Bieżące (bez zrealizowanych)",
             "": "Wszystkie statusy",
             "proposed": route_status_pl("proposed"),
             "approved": route_status_pl("approved"),
+            "in_transit": route_status_pl("in_transit"),
             "completed": route_status_pl("completed"),
         }
 
@@ -2078,7 +2231,6 @@ async def map_page(run_id: int | None = None) -> None:
             app.storage.user["map_status_filter"] = state["status_filter"]
             app.storage.user["map_isolated"] = state["isolated"]
             app.storage.user["map_hidden"] = list(state["hidden"])  # type: ignore[arg-type]
-            app.storage.user["map_show_arrows"] = state["show_arrows"]
             if chosen_explicit:
                 ui.navigate.to(f"/map?run_id={view.run_id}")
             else:
@@ -2088,7 +2240,10 @@ async def map_page(run_id: int | None = None) -> None:
             isolated = state["isolated"]
             filt = str(state["status_filter"] or "")
             for code, row in legend_rows.items():
-                status_ok = not filt or route_status_by_code.get(code) == filt
+                if filt == "__open__":
+                    status_ok = route_status_by_code.get(code) != "completed"
+                else:
+                    status_ok = not filt or route_status_by_code.get(code) == filt
                 row.set_visibility(status_ok)
                 if isolated == code and status_ok:
                     row.classes(add="cd-map-legend-active")
@@ -2149,10 +2304,10 @@ async def map_page(run_id: int | None = None) -> None:
                 with row:
                     cb = ui.checkbox(value=route.vehicle_code not in hidden_codes).props("dense")
                     vehicle_checks[route.vehicle_code] = cb
-                    ui.element("div").classes("cd-map-legend-swatch").style(
-                        f"background:{route.color};"
-                        + ("opacity:0.45;" if route.route_status != "approved" else "")
+                    swatch_style = f"background:{route.color};" + _map_legend_swatch_opacity(
+                        route.route_status
                     )
+                    ui.element("div").classes("cd-map-legend-swatch").style(swatch_style)
                     label = ui.label(
                         f"{route.vehicle_code} · {status_pl} · {len(route.markers)} pkt · {km}"
                     ).classes("cd-map-legend-label")
@@ -2205,7 +2360,6 @@ async def map_page(run_id: int | None = None) -> None:
                     .classes("w-48")
                     .props("options-dense")
                 )
-                arrows_cb = ui.checkbox("Strzałki", value=show_arrows)
 
                 def on_status_change(_e=None) -> None:
                     if suppress_events["v"]:
@@ -2214,31 +2368,7 @@ async def map_page(run_id: int | None = None) -> None:
                     state["isolated"] = None
                     _persist_and_reload()
 
-                def on_arrows_change(_e=None) -> None:
-                    if suppress_events["v"]:
-                        return
-                    state["show_arrows"] = bool(arrows_cb.value)
-                    app.storage.user["map_show_arrows"] = state["show_arrows"]
-                    m = map_ref.get("m")
-                    if m is None:
-                        return
-                    mid = m.id  # type: ignore[attr-defined]
-                    if state["show_arrows"]:
-                        visible = _visible_map_routes(
-                            view,
-                            status_filter=str(state["status_filter"] or ""),
-                            isolated=state["isolated"],  # type: ignore[arg-type]
-                            hidden=state["hidden"],  # type: ignore[arg-type]
-                        )
-                        arrows: list[dict[str, float | str]] = []
-                        for route in visible:
-                            arrows.extend(_map_route_arrows(route))
-                        ui.run_javascript(arrows_javascript(mid, arrows))
-                    else:
-                        ui.run_javascript(clear_arrows_javascript(mid))
-
                 status_select.on_value_change(on_status_change)
-                arrows_cb.on_value_change(on_arrows_change)
 
                 ui.button("Legenda", icon="list", on_click=legend_dialog.open).props("outline")
                 ui.button(
@@ -2251,12 +2381,13 @@ async def map_page(run_id: int | None = None) -> None:
                 fit_btn = ui.button("Dopasuj", icon="fit_screen").props("outline")
                 enlarge_btn = ui.button("Powiększ", icon="open_in_full").props("flat dense no-caps")
 
-            visible_routes = _visible_map_routes(
+            drawable_routes = _visible_map_routes(
                 view,
                 status_filter=str(state["status_filter"] or ""),
                 isolated=state["isolated"],  # type: ignore[arg-type]
                 hidden=state["hidden"],  # type: ignore[arg-type]
             )
+            visible_count = len(drawable_routes)
             meta = format_plan_label(
                 run_id=view.run_id,
                 display_name=view.display_name,
@@ -2264,8 +2395,8 @@ async def map_page(run_id: int | None = None) -> None:
                 created_at=view.created_at,
             )
             meta += f" · pojazdów: {len(view.routes)}"
-            if len(visible_routes) != len(view.routes):
-                meta += f" · widocznych: {len(visible_routes)}"
+            if visible_count != len(view.routes):
+                meta += f" · widocznych: {visible_count}"
             if chosen_explicit:
                 meta += " · podgląd historyczny"
             ui.label(meta).classes("font-medium")
@@ -2283,40 +2414,28 @@ async def map_page(run_id: int | None = None) -> None:
             )
         map_ref["m"] = m
 
+        route_layers: dict[str, object] = {}
         depot_marker = m.marker(
             latlng=(view.depot.latitude, view.depot.longitude),
             options={"title": view.depot.label},
         )
         route_markers: list[tuple[object, str]] = []
-        all_arrows: list[dict[str, float | str]] = []
-        overlay_payload: list[dict[str, object]] = []
-        for route in visible_routes:
-            approved = route.route_status == "approved"
+        for route in drawable_routes:
             isolated_here = state["isolated"] == route.vehicle_code
-            weight = 6 if isolated_here else (5 if approved else 3)
-            opacity = 1.0 if isolated_here or approved else 0.55
-            m.generic_layer(
+            line_opts = _map_polyline_options(route, isolated=isolated_here)
+            layer = m.generic_layer(
                 name="polyline",
                 args=[
                     list(route.polyline),
                     {
                         "color": route.color,
-                        "weight": weight,
-                        "opacity": opacity,
-                        "dashArray": None if approved else "8 8",
+                        "weight": line_opts["weight"],
+                        "opacity": line_opts["opacity"],
+                        "dashArray": line_opts["dashArray"],
                     },
                 ],
             )
-            overlay_payload.append(
-                {
-                    "polyline": [list(pt) for pt in route.polyline],
-                    "color": route.color,
-                    "tooltip_html": route.tooltip_html,
-                    "detail_html": route.detail_html,
-                }
-            )
-            if state["show_arrows"]:
-                all_arrows.extend(_map_route_arrows(route))
+            route_layers[route.vehicle_code] = layer
             for point in route.markers:
                 seq = point.sequence
                 title = f"{seq} · {point.label}" if seq is not None else point.label
@@ -2326,13 +2445,23 @@ async def map_page(run_id: int | None = None) -> None:
                 )
                 route_markers.append((mk, point.popup_html))
 
+        for point in view.problem_markers:
+            mk = m.marker(
+                latlng=(point.latitude, point.longitude),
+                options={"title": f"⚠ {point.label}"},
+            )
+            route_markers.append((mk, point.popup_html))
+
         def _fit_bounds() -> None:
             lats = [view.depot.latitude]
             lons = [view.depot.longitude]
-            for route in visible_routes:
+            for route in drawable_routes:
                 for lat, lon in route.polyline:
                     lats.append(lat)
                     lons.append(lon)
+            for point in view.problem_markers:
+                lats.append(point.latitude)
+                lons.append(point.longitude)
             if len(lats) > 1:
                 m.run_map_method(
                     "fitBounds",
@@ -2359,12 +2488,17 @@ async def map_page(run_id: int | None = None) -> None:
 
         await m.initialized()
         depot_marker.run_method("bindPopup", view.depot.popup_html)
+        for route in drawable_routes:
+            layer = route_layers[route.vehicle_code]
+            m.run_layer_method(
+                layer.id,  # type: ignore[attr-defined]
+                "bindTooltip",
+                route.tooltip_html,
+                {"sticky": True, "opacity": 0.95, "className": "cd-map-route-tooltip"},
+            )
+            m.run_layer_method(layer.id, "bindPopup", route.detail_html)  # type: ignore[attr-defined]
         for mk, html in route_markers:
             mk.run_method("bindPopup", html)  # type: ignore[attr-defined]
-        if overlay_payload:
-            ui.run_javascript(bind_route_overlays_javascript(m.id, overlay_payload))
-        if all_arrows:
-            ui.run_javascript(arrows_javascript(m.id, all_arrows))
         _fit_bounds()
         suppress_events["v"] = False
 
@@ -2379,7 +2513,10 @@ async def reports_page() -> None:
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Efektywność bieżącego stanu").classes("font-bold")
 
+        kpi_reports_host = ui.element("div").classes("w-full cd-gen-kpi-wrap mb-2")
+        reports_kpi_panel = GenerationKpiPanel(kpi_reports_host)
         summary = ui.label("").classes("text-sm")
+        summary.set_visibility(False)
         reports_host = ui.element("div").classes("cd-grid-host")
         with reports_host:
             util_grid = (
@@ -2394,6 +2531,8 @@ async def reports_page() -> None:
                             {"headerName": "Koszt €", "field": "cost"},
                         ],
                         "rowData": [],
+                        "defaultColDef": grid_default_col_def(),
+                        "suppressDragLeaveHidesColumns": True,
                         "domLayout": "normal",
                     }
                 )
@@ -2423,6 +2562,8 @@ async def reports_page() -> None:
                                 {"headerName": "Koszt €", "field": "cost", "width": 100},
                             ],
                             "rowData": [],
+                            "defaultColDef": grid_default_col_def(),
+                            "suppressDragLeaveHidesColumns": True,
                             "rowSelection": "multiple",
                             "suppressRowClickSelection": True,
                             "domLayout": "normal",
@@ -2462,27 +2603,22 @@ async def reports_page() -> None:
                 )
             )
 
-        async def refresh_report() -> None:
-            preferred = _active_run_id_from_storage()
-            bundle = await run.io_bound(_load_report, preferred)
-            history = await run.io_bound(_load_generation_history, 30)
-            history_grid.options["rowData"] = history
-            history_grid.update()
+        compare_host = ui.element("div").classes("w-full mt-2")
+        compare_panel = GenerationComparePanel(compare_host)
+        report_builder = ReportBuilderDialog()
+        selected_report_run_id: dict[str, int | None] = {"id": None}
+
+        async def refresh_report_for_run(run_id: int | None) -> None:
+            bundle = await run.io_bound(_load_report, run_id)
+            kpi = await run.io_bound(_load_generation_kpi, run_id)
+            reports_kpi_panel.update(kpi, show_attention_breakdown=True)
             if bundle is None:
                 summary.set_text("Brak generacji do raportu.")
+                summary.set_visibility(True)
                 util_grid.options["rowData"] = []
                 util_grid.update()
                 return
-            sav = bundle.savings
-            label = format_plan_label(
-                run_id=bundle.run_id,
-                display_name=bundle.display_name,
-                plan_status=bundle.plan_status,
-                created_at=bundle.created_at,
-            )
-            summary.set_text(
-                f"{label} · oszczędność {sav.savings_eur:.0f} € ({sav.savings_pct:.0f}%)"
-            )
+            summary.set_visibility(False)
             util_grid.options["rowData"] = [
                 {
                     "vehicle": r.vehicle_code,
@@ -2496,12 +2632,70 @@ async def reports_page() -> None:
             ]
             util_grid.update()
 
-        async def on_download() -> None:
-            data = await run.io_bound(_export_report_bytes, _active_run_id_from_storage())
-            if data is None:
+        async def on_history_selection() -> None:
+            rows = await history_grid.get_selected_rows()
+            if len(rows) > 2:
+                ui.notify(
+                    "Można zaznaczyć maksymalnie dwie generacje do porównania.", type="warning"
+                )
+                return
+            if len(rows) == 1:
+                rid = int(rows[0]["run_id"])
+                selected_report_run_id["id"] = rid
+                await refresh_report_for_run(rid)
+                compare_panel.update(None)
+            elif len(rows) == 2:
+                a_id = int(rows[0]["run_id"])
+                b_id = int(rows[1]["run_id"])
+                selected_report_run_id["id"] = b_id
+                await refresh_report_for_run(b_id)
+                comparison = await run.io_bound(_compare_generations_job, a_id, b_id)
+                compare_panel.update(comparison)
+            else:
+                selected_report_run_id["id"] = None
+                await refresh_report_for_run(_active_run_id_from_storage())
+                compare_panel.update(None)
+
+        history_grid.on("selectionChanged", lambda _e: on_history_selection())
+
+        async def refresh_report() -> None:
+            preferred = selected_report_run_id["id"] or _active_run_id_from_storage()
+            history = await run.io_bound(_load_generation_history, 30)
+            history_grid.options["rowData"] = history
+            history_grid.update()
+            await refresh_report_for_run(preferred)
+            rows = await history_grid.get_selected_rows()
+            if len(rows) == 2:
+                comparison = await run.io_bound(
+                    _compare_generations_job,
+                    int(rows[0]["run_id"]),
+                    int(rows[1]["run_id"]),
+                )
+                compare_panel.update(comparison)
+            else:
+                compare_panel.update(None)
+
+        async def confirm_download(selection: ReportExportSelection) -> None:
+            rid = selected_report_run_id["id"] or _active_run_id_from_storage()
+            compare_id: int | None = None
+            rows = await history_grid.get_selected_rows()
+            if len(rows) == 2:
+                compare_id = int(rows[0]["run_id"])
+                rid = int(rows[1]["run_id"])
+            result = await run.io_bound(_export_report_bytes, rid, compare_id, selection)
+            if result is None:
                 ui.notify("Brak raportu do pobrania.", type="warning")
                 return
-            ui.download(data, "raport_crossdock.xlsx")
+            data, filename = result
+            ui.download(data, filename)
+
+        async def on_download() -> None:
+            rows = await history_grid.get_selected_rows()
+            compare_available = len(rows) == 2
+            report_builder.open(
+                compare_available=compare_available,
+                on_download=confirm_download,
+            )
 
         with ui.row().classes("cd-toolbar"):
             ui.button("Odśwież", on_click=refresh_report).props("outline")
@@ -2523,15 +2717,24 @@ def _load_report(run_id: int | None = None) -> ReportBundle | None:
         return build_report(session, run_id=resolved)
 
 
-def _export_report_bytes(run_id: int | None = None) -> bytes | None:
+def _export_report_bytes(
+    run_id: int | None = None,
+    compare_run_id: int | None = None,
+    selection: ReportExportSelection | None = None,
+) -> tuple[bytes, str] | None:
     with session_scope() as session:
         resolved = PlanningService(session).resolve_run_id(run_id)
         if resolved is None:
             return None
-        bundle = build_report(session, run_id=resolved)
+        bundle = build_report_xlsx_data(
+            session,
+            run_id=resolved,
+            compare_run_id=compare_run_id,
+        )
         if bundle is None:
             return None
-        return export_report_xlsx(bundle)
+        filename = report_export_filename(resolved, compare_run_id=compare_run_id)
+        return export_report_xlsx(bundle, selection=selection), filename
 
 
 @ui.page("/warehouse")
@@ -2573,8 +2776,8 @@ async def warehouse_page() -> None:
                                 {"headerName": "Kod", "field": "delivery_code", "filter": True},
                                 {"headerName": "Miasto", "field": "city", "filter": True},
                                 {"headerName": "Waga [kg]", "field": "weight_kg", "sortable": True},
-                                {"headerName": "Termin", "field": "delivery_date"},
-                                {"headerName": "Wyjechać do", "field": "must_leave_on"},
+                                {"headerName": "Wyjazd do", "field": "must_leave_on"},
+                                {"headerName": "Termin dostawy", "field": "delivery_date"},
                                 {
                                     "headerName": "Luz [dni]",
                                     "field": "slack_days",
@@ -2582,6 +2785,8 @@ async def warehouse_page() -> None:
                                 },
                             ],
                             "rowData": [],
+                            "defaultColDef": grid_default_col_def(),
+                            "suppressDragLeaveHidesColumns": True,
                             "rowSelection": "multiple",
                             "suppressRowClickSelection": True,
                             "domLayout": "normal",
@@ -2612,13 +2817,13 @@ async def warehouse_page() -> None:
                     ui.aggrid(
                         {
                             "columnDefs": [
-                                selection_column(multiple=False),
+                                selection_column(multiple=True),
                                 {"headerName": "Poz.", "field": "position", "width": 70},
                                 {"headerName": "Kod", "field": "delivery_code", "filter": True},
                                 {"headerName": "Miasto", "field": "city"},
                                 {"headerName": "Waga [kg]", "field": "weight_kg"},
-                                {"headerName": "Termin", "field": "delivery_date"},
-                                {"headerName": "Wyjechać do", "field": "must_leave_on"},
+                                {"headerName": "Wyjazd do", "field": "must_leave_on"},
+                                {"headerName": "Termin dostawy", "field": "delivery_date"},
                                 {
                                     "headerName": "Luz [dni]",
                                     "field": "slack_days",
@@ -2628,7 +2833,9 @@ async def warehouse_page() -> None:
                                 {"headerName": "ID", "field": "order_id", "width": 80},
                             ],
                             "rowData": [],
-                            "rowSelection": "single",
+                            "defaultColDef": grid_default_col_def(),
+                            "suppressDragLeaveHidesColumns": True,
+                            "rowSelection": "multiple",
                             "suppressRowClickSelection": True,
                             "domLayout": "normal",
                         }
@@ -2663,8 +2870,8 @@ async def warehouse_page() -> None:
                 with ui.row().classes("items-center gap-1"):
                     ui.label("W drodze").classes("cd-wh-card-title")
                     info_hint(
-                        "Zatwierdzone trasy aktywnego planu, które jeszcze nie wróciły. "
-                        "Zrealizowane = auto wolne, zlecenia dostarczone, trasa zostaje w historii."
+                        "Zatwierdzone trasy gotowe do wyjazdu oraz trasy w drodze. "
+                        "Najpierw „Wyjechało”, potem „Zrealizowane”."
                     )
                 enlarge_transit_btn = ui.button("Powiększ", icon="open_in_full").props(
                     "flat dense no-caps"
@@ -2686,6 +2893,8 @@ async def warehouse_page() -> None:
                                 {"headerName": "Status", "field": "route_status_pl"},
                             ],
                             "rowData": [],
+                            "defaultColDef": grid_default_col_def(),
+                            "suppressDragLeaveHidesColumns": True,
                             "rowSelection": "multiple",
                             "suppressRowClickSelection": True,
                             "domLayout": "normal",
@@ -2694,10 +2903,11 @@ async def warehouse_page() -> None:
                     .classes("w-full")
                     .style("height: 180px")
                 )
-            transit_empty = ui.label("Brak zatwierdzonych tras w drodze.").classes(
+            transit_empty = ui.label("Brak tras zatwierdzonych lub w drodze.").classes(
                 "text-sm text-gray-500"
             )
             with ui.row().classes("cd-toolbar"):
+                depart_wh_btn = ui.button("Wyjechało", icon="local_shipping").props("outline")
                 complete_wh_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
 
         with ui.element("div").classes("cd-wh-card w-full"):
@@ -2729,6 +2939,8 @@ async def warehouse_page() -> None:
                                 {"headerName": "Oszczędność %", "field": "savings_pct"},
                             ],
                             "rowData": [],
+                            "defaultColDef": grid_default_col_def(),
+                            "suppressDragLeaveHidesColumns": True,
                             "rowSelection": "multiple",
                             "suppressRowClickSelection": True,
                             "domLayout": "normal",
@@ -2751,7 +2963,11 @@ async def warehouse_page() -> None:
                     _load_warehouse_view, _active_run_id_from_storage()
                 )
             except Exception as exc:
-                ui.notify(f"Nie udało się wczytać kolejki: {exc}", type="negative")
+                notify_once(
+                    "warehouse:refresh",
+                    f"Nie udało się wczytać kolejki: {exc}",
+                    type="negative",
+                )
                 return
             candidates_grid.options["rowData"] = [
                 {
@@ -2797,6 +3013,7 @@ async def warehouse_page() -> None:
                     "vehicle": r.vehicle_code,
                     "order_count": r.order_count,
                     "distance_km": r.distance_km,
+                    "route_status": r.route_status,
                     "route_status_pl": route_status_pl(r.route_status),
                 }
                 for r in in_transit
@@ -2833,48 +3050,114 @@ async def warehouse_page() -> None:
                 ui.notify("Zaznacz zlecenie z listy dostępnych.", type="warning")
                 return
             added = 0
+            errors: list[str] = []
             for row in selected:
                 try:
                     await run.io_bound(_enqueue_job, int(row["order_id"]), username)
                     added += 1
                 except Exception as exc:
-                    ui.notify(str(exc), type="negative")
+                    code = str(row.get("delivery_code") or row.get("order_id") or "?")
+                    errors.append(f"{code}: {exc}")
             if added:
                 ui.notify(f"Dodano do kolejki: {added}.", type="positive")
+            if errors:
+                notify_route_batch_results(
+                    dedupe_key="warehouse:enqueue",
+                    failures=errors,
+                    failure_title="Nie udało się dodać zleceń do kolejki",
+                )
             await refresh_all()
 
-        async def _selected_order_id() -> int | None:
+        async def _selected_order_ids() -> list[int]:
             rows = await grid.get_selected_rows()
             if not rows:
                 ui.notify("Zaznacz pozycję w kolejce.", type="warning")
-                return None
-            return int(rows[0]["order_id"])
+                return []
+            return [int(row["order_id"]) for row in rows]
 
         async def _move(direction: str) -> None:
-            oid = await _selected_order_id()
-            if oid is None:
+            order_ids = await _selected_order_ids()
+            if not order_ids:
                 return
-            await run.io_bound(_move_job, oid, direction, username)
+            if len(order_ids) > 1:
+                ui.notify("Do przesunięcia zaznacz dokładnie jedną pozycję.", type="warning")
+                return
+            await run.io_bound(_move_job, order_ids[0], direction, username)
             await refresh_all()
 
         async def _hold(held: bool) -> None:
-            oid = await _selected_order_id()
-            if oid is None:
+            order_ids = await _selected_order_ids()
+            if not order_ids:
                 return
-            await run.io_bound(_hold_job, oid, held, username)
+            for oid in order_ids:
+                await run.io_bound(_hold_job, oid, held, username)
             await refresh_all()
 
         async def _remove() -> None:
-            oid = await _selected_order_id()
-            if oid is None:
+            order_ids = await _selected_order_ids()
+            if not order_ids:
                 return
-            await run.io_bound(_dequeue_job, oid, username)
-            ui.notify("Usunięto z kolejki.", type="positive")
+            removed = 0
+            for oid in order_ids:
+                if await run.io_bound(_dequeue_job, oid, username):
+                    removed += 1
+            if removed:
+                ui.notify(f"Usunięto z kolejki: {removed}.", type="positive")
             await refresh_all()
+
+        async def on_depart_routes() -> None:
+            rows = await transit_grid.get_selected_rows()
+            approved = [r for r in rows if r.get("route_status") == "approved"]
+            if not approved:
+                ui.notify(
+                    "Zaznacz co najmniej jedną trasę zatwierdzoną (gotową do wyjazdu).",
+                    type="warning",
+                )
+                return
+            run_id = _active_run_id_from_storage()
+            if run_id is None:
+                ui.notify("Brak aktywnego planu.", type="warning")
+                return
+            results: list[tuple[int, str]] = []
+            errors: list[str] = []
+            for row in approved:
+                vehicle_id = row.get("vehicle_id")
+                vehicle = str(row.get("vehicle") or vehicle_id or "?")
+                if vehicle_id is None:
+                    errors.append(f"{vehicle}: brak pojazdu")
+                    continue
+                try:
+                    results.append(
+                        await run.io_bound(
+                            _depart_route_job, int(run_id), int(vehicle_id), username
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(route_action_error_pl(exc, vehicle=vehicle))
+            success_message: str | None = None
+            if results:
+                if len(results) == 1:
+                    rid, code = results[0]
+                    success_message = f"Wyjechało: {code} (generacja #{rid})."
+                else:
+                    display = ", ".join(code for _, code in results[:5])
+                    if len(results) > 5:
+                        display += "..."
+                    success_message = f"W drodze: {len(results)} tras ({display})."
+            notify_route_batch_results(
+                dedupe_key="warehouse:depart",
+                failures=errors,
+                failure_title="Nie udało się oznaczyć wyjazdu",
+                success_message=success_message,
+                partial_title="Część tras nie wyjechała",
+            )
+            if results or errors:
+                await refresh_all()
 
         async def on_complete_in_transit() -> None:
             rows = await transit_grid.get_selected_rows()
-            if not rows:
+            in_transit = [r for r in rows if r.get("route_status") == "in_transit"]
+            if not in_transit:
                 ui.notify("Zaznacz co najmniej jedną trasę w drodze.", type="warning")
                 return
             run_id = _active_run_id_from_storage()
@@ -2883,10 +3166,11 @@ async def warehouse_page() -> None:
                 return
             results: list[tuple[int, int, str]] = []
             errors: list[str] = []
-            for row in rows:
+            for row in in_transit:
                 vehicle_id = row.get("vehicle_id")
+                vehicle = str(row.get("vehicle") or vehicle_id or "?")
                 if vehicle_id is None:
-                    errors.append(f"{row.get('vehicle', '?')}: brak pojazdu")
+                    errors.append(f"{vehicle}: brak pojazdu")
                     continue
                 try:
                     results.append(
@@ -2895,40 +3179,36 @@ async def warehouse_page() -> None:
                         )
                     )
                 except Exception as exc:
-                    errors.append(f"{row.get('vehicle', vehicle_id)}: {exc}")
-            if not results:
-                ui.notify(
-                    "Nie udało się oznaczyć żadnej trasy: " + "; ".join(errors),
-                    type="negative",
-                )
-                return
-            if len(results) == 1:
-                rid, n_orders, code = results[0]
-                ui.notify(
-                    f"Zrealizowano trasę {code} (generacja #{rid}, {n_orders} zleceń). Auto wolne.",
-                    type="positive",
-                )
-            else:
-                display = ", ".join(code for _, _, code in results[:5])
-                if len(results) > 5:
-                    display += "..."
-                ui.notify(
-                    f"Zrealizowano {len(results)} tras: {display}.",
-                    type="positive",
-                )
-            if errors:
-                ui.notify(
-                    "Część tras nie została oznaczona jako zrealizowana: " + "; ".join(errors[:3]),
-                    type="warning",
-                )
-            await refresh_all()
+                    errors.append(route_action_error_pl(exc, vehicle=vehicle))
+            success_message: str | None = None
+            if results:
+                if len(results) == 1:
+                    rid, n_orders, code = results[0]
+                    success_message = (
+                        f"Zrealizowano trasę {code} (generacja #{rid}, {n_orders} zleceń). "
+                        "Auto wolne."
+                    )
+                else:
+                    display = ", ".join(code for _, _, code in results[:5])
+                    if len(results) > 5:
+                        display += "..."
+                    success_message = f"Zrealizowano {len(results)} tras: {display}."
+            notify_route_batch_results(
+                dedupe_key="warehouse:complete",
+                failures=errors,
+                failure_title="Nie udało się zrealizować tras",
+                success_message=success_message,
+                partial_title="Część tras nie została oznaczona jako zrealizowana",
+            )
+            if results or errors:
+                await refresh_all()
 
         async def refresh_buffer() -> None:
             nonlocal buffer_decisions
             try:
                 bundle = await run.io_bound(_propose_buffer_job)
             except Exception as exc:
-                ui.notify(f"Błąd propozycji: {exc}", type="negative")
+                notify_once("warehouse:buffer", f"Błąd propozycji: {exc}", type="negative")
                 return
             buffer_decisions = {d.order_id: d for d in bundle.decisions}
             buffer_only = [d for d in bundle.decisions if d.action == "buffer"]
@@ -2986,7 +3266,16 @@ async def warehouse_page() -> None:
                 on_click=on_accept_buffer,
             ).props("color=primary")
 
+        def _transit_enlarge_toolbar() -> None:
+            ui.button("Wyjechało", icon="local_shipping", on_click=on_depart_routes).props(
+                "outline"
+            )
+            ui.button("Zrealizowane", icon="done", on_click=on_complete_in_transit).props(
+                "color=positive"
+            )
+
         enqueue_btn.on_click(on_enqueue_selected)
+        depart_wh_btn.on_click(on_depart_routes)
         complete_wh_btn.on_click(on_complete_in_transit)
         refresh_buffer_btn.on_click(refresh_buffer)
         accept_buffer_btn.on_click(on_accept_buffer)
@@ -3019,11 +3308,7 @@ async def warehouse_page() -> None:
                 transit_host,
                 title="W drodze",
                 compact_height="180px",
-                toolbar_builder=lambda: ui.button(
-                    "Zrealizowane",
-                    icon="done",
-                    on_click=on_complete_in_transit,
-                ).props("color=positive"),
+                toolbar_builder=_transit_enlarge_toolbar,
             )
         )
         enlarge_buffer_btn.on_click(
@@ -3044,7 +3329,7 @@ def _load_warehouse_view(run_id: int | None = None):
         return (
             list_enqueue_candidates(session),
             list_queue(session),
-            list_in_transit_routes(session, run_id=run_id),
+            list_departure_routes(session, run_id=run_id),
             warehouse_snapshot(session, run_id=run_id),
         )
 
@@ -3377,29 +3662,6 @@ def _save_params_job(updates: dict, username: str):
         return save_runtime_overrides(updates, session=session, username=username)
 
 
-PARAM_LABELS_PL = {
-    "depot_latitude": "Szerokość geograficzna magazynu",
-    "depot_longitude": "Długość geograficzna magazynu",
-    "min_fill_ratio": "Min. zapełnienie (0-1)",
-    "max_drops_per_route": "Maks. punktów rozładunku",
-    "solver_time_limit_s": "Limit czasu planowania [s]",
-    "solver_seed": "Ziarno losowości (powtarzalność planów)",
-    "default_delivery_days": "Domyślny termin dostawy [dni]",
-    "cost_per_km": "Stawka €/km",
-    "storage_cost_per_pallet_day": "Koszt magazynu €/paleta/dzień",
-    "ltl_cost_multiplier": "Mnożnik drobnicy (LTL)",
-    "buffer_savings_threshold": "Próg oszczędności bufora (0-1)",
-    "max_buffer_days": "Maks. dni buforowania",
-    "planning_date": "Dzień planowania (symulacja)",
-    "ship_lead_days": "Wyjazd przed terminem [dni]",
-    "warehouse_capacity_kg": "Pojemność magazynu [kg]",
-    "upload_max_mb": "Limit uploadu Excel [MB]",
-    "backup_keep": "Ile kopii zapasowych trzymać",
-    "backup_hour": "Godzina nocnej kopii",
-    "backup_minute": "Minuta nocnej kopii",
-}
-
-
 @ui.page("/settings")
 async def settings_page() -> None:
     username = app.storage.user.get("username", "unknown")
@@ -3458,6 +3720,10 @@ async def settings_page() -> None:
                             + (f" (pominięto zajęte: {skipped})" if skipped else "")
                         )
                     ui.notify(" · ".join(messages), type="positive")
+                    ui.notify(
+                        "Zmiana floty wymaga ponownego wygenerowania planu (Generuj w Operacjach).",
+                        type="warning",
+                    )
                     await refresh_vehicles()
                     # refresh type labels by full page reload of overview numbers
                     refreshed = await run.io_bound(_load_fleet_type_overview)
@@ -3490,6 +3756,8 @@ async def settings_page() -> None:
                                     {"headerName": "Zajęty", "field": "is_busy"},
                                 ],
                                 "rowData": _vehicles_to_rows(vehicles),
+                                "defaultColDef": grid_default_col_def(),
+                                "suppressDragLeaveHidesColumns": True,
                                 "rowSelection": "single",
                                 "suppressRowClickSelection": True,
                                 "domLayout": "normal",
@@ -3569,6 +3837,8 @@ async def settings_page() -> None:
                                     {"headerName": "Lon", "field": "longitude"},
                                 ],
                                 "rowData": _locations_to_rows(locations),
+                                "defaultColDef": grid_default_col_def(),
+                                "suppressDragLeaveHidesColumns": True,
                                 "rowSelection": "single",
                                 "suppressRowClickSelection": True,
                                 "domLayout": "normal",
@@ -3660,86 +3930,98 @@ async def settings_page() -> None:
                     ).classes("text-sm text-gray-700")
                 snap = editable_settings_snapshot()
                 fields: dict[str, ui.number] = {}
-                groups = [
-                    (
-                        "Magazyn przeładunkowy",
-                        ["depot_latitude", "depot_longitude"],
-                    ),
-                    (
-                        "Planowanie",
-                        [
-                            "min_fill_ratio",
-                            "max_drops_per_route",
-                            "solver_time_limit_s",
-                            "solver_seed",
-                            "default_delivery_days",
-                            "ship_lead_days",
-                            "warehouse_capacity_kg",
-                        ],
-                    ),
-                    (
-                        "Koszty i bufor",
-                        [
-                            "cost_per_km",
-                            "storage_cost_per_pallet_day",
-                            "ltl_cost_multiplier",
-                            "buffer_savings_threshold",
-                            "max_buffer_days",
-                        ],
-                    ),
-                    (
-                        "Operacje",
-                        [
-                            "upload_max_mb",
-                            "backup_keep",
-                            "backup_hour",
-                            "backup_minute",
-                        ],
-                    ),
-                ]
-                for title, keys in groups:
-                    ui.label(title).classes("font-medium mt-2")
-                    with ui.row().classes("w-full flex-wrap gap-3"):
-                        for key in keys:
+                regenerate_banner = ui.label("").classes(
+                    "text-sm text-amber-800 bg-amber-50 p-2 rounded w-full"
+                )
+                regenerate_banner.set_visibility(False)
+
+                def _show_regenerate_banner() -> None:
+                    regenerate_banner.set_text(
+                        "Zmiana wymaga ponownego wygenerowania planu (Generuj w Operacjach)."
+                    )
+                    regenerate_banner.set_visibility(True)
+
+                ui.label(TIER_TITLES_PL["planning"]).classes("font-medium mt-2")
+                ui.label("Liczba i typ pojazdów ustawiasz w zakładce Flota.").classes(
+                    "text-xs text-gray-600 mb-2"
+                )
+                with ui.column().classes("w-full gap-3"):
+                    for key in TIER_FIELD_ORDER["planning"]:
+                        meta = PARAM_META[key]
+                        with ui.element("div").classes("w-full max-w-md"):
                             fields[key] = ui.number(
-                                PARAM_LABELS_PL.get(key, key),
+                                meta.label,
                                 value=float(snap[key]),
-                                format="%.4g",
-                            ).classes("w-56")
-                ui.label("Zegar symulacji").classes("font-medium mt-2")
+                                format=meta.number_format,
+                            ).classes("w-full")
+                            ui.label(meta.description).classes("text-xs text-gray-600")
+
+                ui.label(TIER_TITLES_PL["costs"]).classes("font-medium mt-4")
+                with ui.column().classes("w-full gap-3"):
+                    for key in TIER_FIELD_ORDER["costs"]:
+                        meta = PARAM_META[key]
+                        with ui.element("div").classes("w-full max-w-md"):
+                            fields[key] = ui.number(
+                                meta.label,
+                                value=float(snap[key]),
+                                format=meta.number_format,
+                            ).classes("w-full")
+                            ui.label(meta.description).classes("text-xs text-gray-600")
+
+                with ui.expansion(TIER_TITLES_PL["advanced"], value=False).classes("w-full mt-4"):  # noqa: SIM117
+                    with ui.column().classes("w-full gap-3"):
+                        for key in TIER_FIELD_ORDER["advanced"]:
+                            meta = PARAM_META[key]
+                            with ui.element("div").classes("w-full max-w-md"):
+                                fields[key] = ui.number(
+                                    meta.label,
+                                    value=float(snap[key]),
+                                    format=meta.number_format,
+                                ).classes("w-full")
+                                ui.label(meta.description).classes("text-xs text-gray-600")
+
+                planning_meta = PARAM_META["planning_date"]
+                ui.label(planning_meta.label).classes("font-medium mt-4")
                 planning_in = (
                     ui.input(
-                        PARAM_LABELS_PL["planning_date"],
+                        planning_meta.label,
                         value=str(snap.get("planning_date") or ""),
                     )
                     .props("type=date")
                     .classes("w-56")
                 )
-                ui.label("Puste pole = prawdziwa data kalendarzowa.").classes(
-                    "text-xs text-gray-600"
-                )
+                ui.label(planning_meta.description).classes("text-xs text-gray-600")
 
                 async def on_save_params() -> None:
                     updates = {key: float(widget.value or 0) for key, widget in fields.items()}
-                    # ints
-                    for key in (
-                        "max_drops_per_route",
-                        "solver_seed",
-                        "default_delivery_days",
-                        "max_buffer_days",
-                        "ship_lead_days",
-                        "upload_max_mb",
-                        "backup_keep",
-                        "backup_hour",
-                        "backup_minute",
-                    ):
+                    for key in INT_PARAM_KEYS:
                         if key in updates:
                             updates[key] = int(updates[key])
                     raw_date = str(planning_in.value or "").strip()
                     updates["planning_date"] = raw_date or None
+                    needs_regen = False
+                    for key, _widget in fields.items():
+                        meta = PARAM_META.get(key)
+                        if meta is None or not meta.requires_regenerate:
+                            continue
+                        old_val = snap.get(key)
+                        new_val = updates[key]
+                        if old_val != new_val:
+                            needs_regen = True
+                    old_date = snap.get("planning_date")
+                    if old_date != updates["planning_date"]:
+                        needs_regen = True
                     await run.io_bound(_save_params_job, updates, username)
                     ui.notify("Zapisano parametry.", type="positive")
+                    if needs_regen:
+                        _show_regenerate_banner()
 
-                ui.button("Zapisz parametry", icon="save", on_click=on_save_params).props(
-                    "color=primary"
-                ).classes("mt-3")
+                with ui.row().classes("cd-toolbar mt-3 gap-2"):
+                    ui.button("Zapisz parametry", icon="save", on_click=on_save_params).props(
+                        "color=primary"
+                    )
+                    ui.button(
+                        "Przejdź do Operacji",
+                        icon="auto_awesome",
+                        on_click=lambda: ui.navigate.to("/plans"),
+                    ).props("outline")

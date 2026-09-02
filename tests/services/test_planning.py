@@ -391,6 +391,11 @@ def _first_routed_vehicle_id(session: Session, run_id: int) -> int:
     return vehicle_id
 
 
+def _approve_depart(service: PlanningService, run_id: int, vehicle_id: int) -> None:
+    service.approve_route(run_id=run_id, vehicle_id=vehicle_id, username="approver")
+    service.depart_route(run_id=run_id, vehicle_id=vehicle_id, username="ops")
+
+
 def test_complete_route_delivers_and_frees_vehicle(db_session: Session) -> None:
     _add_vehicle(db_session)
     order_a = _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
@@ -399,10 +404,10 @@ def test_complete_route_delivers_and_frees_vehicle(db_session: Session) -> None:
     plan = service.run_plan(username="tester")
     vehicle_id = _first_routed_vehicle_id(db_session, plan.run_id)
 
-    with pytest.raises(ValueError, match="tylko zatwierdzoną"):
+    with pytest.raises(ValueError, match="w drodze"):
         service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
 
-    service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    _approve_depart(service, plan.run_id, vehicle_id)
     outcome = service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
     assert outcome.vehicle_id == vehicle_id
     assert outcome.delivered_order_ids
@@ -461,7 +466,7 @@ def test_complete_route_keeps_inseparable_shipments(db_session: Session) -> None
     service = PlanningService(db_session, settings=_settings())
     plan = service.run_plan(username="tester")
     vehicle_id = _first_routed_vehicle_id(db_session, plan.run_id)
-    service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    _approve_depart(service, plan.run_id, vehicle_id)
     outcome = service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
     assert order.id in outcome.delivered_order_ids
 
@@ -479,6 +484,7 @@ def test_unlock_and_delete_leave_completed_history(db_session: Session) -> None:
     plan = service.run_plan(username="tester")
     vehicle_id = _first_routed_vehicle_id(db_session, plan.run_id)
     service.approve_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="approver")
+    service.depart_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
     service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
 
     with pytest.raises(ValueError, match="zrealizowana"):
@@ -499,3 +505,20 @@ def test_unlock_and_delete_leave_completed_history(db_session: Session) -> None:
     )
     assert order is not None
     assert order.status == OrderStatus.DELIVERED
+
+
+def test_delete_proposed_payload_keeps_completed_route(db_session: Session) -> None:
+    _add_vehicle(db_session)
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    service = PlanningService(db_session, settings=_settings())
+    plan = service.run_plan(username="tester")
+    vehicle_id = _first_routed_vehicle_id(db_session, plan.run_id)
+    _approve_depart(service, plan.run_id, vehicle_id)
+    service.complete_route(run_id=plan.run_id, vehicle_id=vehicle_id, username="ops")
+
+    repo = AssignmentRepository(db_session)
+    assert len(repo.list_routes_for_run(plan.run_id)) == 1
+    repo.delete_proposed_payload(plan.run_id)
+    routes = repo.list_routes_for_run(plan.run_id)
+    assert len(routes) == 1
+    assert routes[0].route_status == "completed"

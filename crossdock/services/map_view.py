@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
+from crossdock.domain.attention import attention_reason_pl
+from crossdock.services.plan_view import build_plan_view
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository
 from crossdock.text_pl import route_status_pl
 
@@ -58,14 +60,23 @@ def _parse_polyline_json(raw: str | None) -> tuple[tuple[float, float], ...] | N
     return tuple(points)
 
 
+def _alert_html(messages: tuple[str, ...]) -> str:
+    if not messages:
+        return ""
+    parts = "".join(f'<div class="cd-map-alert">⚠ {msg}</div>' for msg in messages)
+    return parts + "<br/>"
+
+
 @dataclass(frozen=True)
 class MapPoint:
     latitude: float
     longitude: float
     label: str
     popup_html: str
-    kind: str  # depot | drop
+    kind: str  # depot | drop | problem
     sequence: int | None = None
+    has_problem: bool = False
+    problem_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,8 @@ class VehicleMapRoute:
     tooltip_html: str = ""
     detail_html: str = ""
     departure_hint: str | None = None
+    has_problem: bool = False
+    problem_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,11 +106,13 @@ class MapPlanView:
     plan_status: str
     depot: MapPoint
     routes: tuple[VehicleMapRoute, ...]
+    problem_markers: tuple[MapPoint, ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
     center: tuple[float, float] = (51.176, 4.836)
     zoom: int = 7
     display_name: str | None = None
     created_at: datetime | None = None
+    min_fill_ratio: float = 0.90
 
 
 class MapViewService:
@@ -113,6 +128,8 @@ class MapViewService:
         items = repo.list_items_for_run(run_id)
         routes_meta = {r.vehicle_code: r for r in repo.list_routes_for_run(run_id)}
         orders = OrderRepository(self._session)
+        plan_view = build_plan_view(self._session, self._settings, run_id=run_id)
+        route_info = {str(r["vehicle"]): r for r in plan_view.routes}
 
         depot_lat = self._settings.depot_latitude
         depot_lon = self._settings.depot_longitude
@@ -126,7 +143,6 @@ class MapViewService:
             kind="depot",
         )
 
-        # Group sequenced items by vehicle (skip UNASSIGNED / UNROUTED).
         by_vehicle: dict[str, list[Any]] = {}
         for item in items:
             if item.vehicle_code in {"UNASSIGNED", "UNROUTED"}:
@@ -137,8 +153,42 @@ class MapViewService:
 
         warnings: list[str] = []
         vehicle_routes: list[VehicleMapRoute] = []
+        problem_markers: list[MapPoint] = []
         all_lats: list[float] = [depot_lat]
         all_lons: list[float] = [depot_lon]
+        min_fill = plan_view.min_fill_ratio
+
+        unrouted_with_coords = 0
+        for item in items:
+            if item.vehicle_code != "UNROUTED":
+                continue
+            order = orders.get_by_id(item.order_id)
+            if order is None:
+                continue
+            lat = order.delivery_location.latitude
+            lon = order.delivery_location.longitude
+            reason = attention_reason_pl(item.attention_reason)
+            if lat is None or lon is None:
+                continue
+            unrouted_with_coords += 1
+            popup = (
+                f"<div class='cd-map-alert'>⚠ Wymaga uwagi: {reason}</div>"
+                f"<b>{item.delivery_code}</b><br/>"
+                f"Zlecenie bez trasy — uzupełnij dane lub wygeneruj ponownie."
+            )
+            problem_markers.append(
+                MapPoint(
+                    latitude=lat,
+                    longitude=lon,
+                    label=item.delivery_code,
+                    popup_html=popup,
+                    kind="problem",
+                    has_problem=True,
+                    problem_labels=(reason,),
+                )
+            )
+            all_lats.append(lat)
+            all_lons.append(lon)
 
         for vehicle_code, vehicle_items in sorted(by_vehicle.items()):
             vehicle_items.sort(key=lambda i: i.sequence or 0)
@@ -146,6 +196,22 @@ class MapViewService:
             markers: list[MapPoint] = []
             path: list[tuple[float, float]] = [(depot_lat, depot_lon)]
             cities: list[str] = []
+            info = route_info.get(vehicle_code, {})
+            below_fill = bool(info.get("below_min_fill"))
+            min_slack = info.get("min_slack")
+            overdue = isinstance(min_slack, int) and min_slack < 0
+            route_problems: list[str] = []
+            if below_fill:
+                fill_pct = info.get("weight_fill_pct")
+                pct_txt = f"{fill_pct:.0f}%" if isinstance(fill_pct, (int, float)) else "—"
+                route_problems.append(
+                    f"Zapełnienie {pct_txt} — poniżej progu {min_fill * 100:.0f}%"
+                )
+            if overdue:
+                route_problems.append("Spóźnione względem terminu wyjazdu")
+            elif isinstance(min_slack, int) and min_slack == 0:
+                route_problems.append("Ostatni dzień na wysłanie")
+
             for item in vehicle_items:
                 order = orders.get_by_id(item.order_id)
                 if order is None:
@@ -162,7 +228,14 @@ class MapViewService:
                 city = order.delivery_location.city or "—"
                 cities.append(city)
                 due = order.delivery_date.isoformat() if order.delivery_date else "—"
+                drop_alert = ""
+                if item.attention_reason:
+                    drop_alert = (
+                        f'<div class="cd-map-alert">⚠ {attention_reason_pl(item.attention_reason)}'
+                        "</div>"
+                    )
                 popup = (
+                    f"{drop_alert}"
                     f"<b>{item.delivery_code}</b><br/>"
                     f"Pojazd: {vehicle_code}<br/>"
                     f"Kolejność: {item.sequence}<br/>"
@@ -178,6 +251,12 @@ class MapViewService:
                         popup_html=popup,
                         kind="drop",
                         sequence=item.sequence,
+                        has_problem=bool(item.attention_reason),
+                        problem_labels=(
+                            (attention_reason_pl(item.attention_reason),)
+                            if item.attention_reason
+                            else ()
+                        ),
                     )
                 )
                 path.append((lat, lon))
@@ -185,7 +264,6 @@ class MapViewService:
                 all_lons.append(lon)
 
             if len(path) == 1:
-                # Only depot — nothing drawable for this vehicle
                 continue
             path.append((depot_lat, depot_lon))
             waypoints = tuple(path)
@@ -206,9 +284,16 @@ class MapViewService:
             km_txt = f"{km:.1f} km" if km is not None else "—"
             cost_txt = f"{cost:.0f} €" if cost is not None else "—"
             status_pl = route_status_pl(status)
-            drop_lines = "<br/>".join(
-                f"{m.sequence}. {m.label}" for m in markers if m.sequence is not None
-            )
+            drop_lines_parts: list[str] = []
+            for m in markers:
+                if m.sequence is None:
+                    continue
+                prefix = "⚠ " if m.has_problem else ""
+                drop_lines_parts.append(f"{prefix}{m.sequence}. {m.label}")
+            drop_lines = "<br/>".join(drop_lines_parts)
+            problem_tuple = tuple(route_problems)
+            has_problem = bool(problem_tuple)
+            alerts = _alert_html(problem_tuple)
             tooltip_html = (
                 f"<b>{vehicle_code}</b> · {status_pl}<br/>"
                 f"Dropy: {len(markers)} · zlecenia: {len(markers)}<br/>"
@@ -216,6 +301,7 @@ class MapViewService:
                 f"{km_txt} · {cost_txt}"
             )
             detail_html = (
+                f"{alerts}"
                 f"<b>{vehicle_code}</b><br/>"
                 f"Status: {status_pl}<br/>"
                 f"Zlecenia / dropy: {len(markers)}<br/>"
@@ -238,6 +324,8 @@ class MapViewService:
                     cities_summary=cities_summary,
                     tooltip_html=tooltip_html,
                     detail_html=detail_html,
+                    has_problem=has_problem,
+                    problem_labels=problem_tuple,
                 )
             )
 
@@ -250,11 +338,13 @@ class MapViewService:
             plan_status=run.plan_status,
             depot=depot,
             routes=tuple(vehicle_routes),
+            problem_markers=tuple(problem_markers),
             warnings=tuple(warnings),
             center=center,
             zoom=7 if len(vehicle_routes) > 1 else 8,
             display_name=run.display_name,
             created_at=run.created_at,
+            min_fill_ratio=min_fill,
         )
 
     def build_latest(self) -> MapPlanView | None:

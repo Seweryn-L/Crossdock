@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 
+import pandas as pd
 import pytest
 from pydantic import SecretStr
 from sqlalchemy.orm import Session
@@ -12,7 +14,13 @@ from crossdock.config import Settings
 from crossdock.domain.models import Location, Order, OrderStatus, Shipment, Vehicle, VehicleType
 from crossdock.services.orders import update_approved_pallets
 from crossdock.services.planning import PlanningService
-from crossdock.services.reports import build_report, export_report_xlsx
+from crossdock.services.report_export_options import ReportExportSelection, ReportSheetId
+from crossdock.services.reports import (
+    build_report,
+    build_report_xlsx_data,
+    export_report_xlsx,
+    report_export_filename,
+)
 from crossdock.services.warehouse_queue import (
     enqueue_many,
     enqueue_order,
@@ -85,8 +93,130 @@ def test_build_and_export_report(db_session: Session) -> None:
     assert len(bundle.utilization) >= 1
     assert bundle.savings.routed_orders >= 2
     assert bundle.savings.baseline_cost_eur >= bundle.savings.optimized_cost_eur
-    xlsx = export_report_xlsx(bundle)
+
+    xlsx_bundle = build_report_xlsx_data(db_session, run_id=run_id, settings=_settings())
+    assert xlsx_bundle is not None
+    assert xlsx_bundle.kpi is not None
+    assert xlsx_bundle.routed_orders
+    xlsx = export_report_xlsx(xlsx_bundle)
     assert xlsx[:2] == b"PK"  # zip/xlsx magic
+
+    book = pd.ExcelFile(BytesIO(xlsx))
+    assert book.sheet_names == [
+        "Podsumowanie",
+        "Trasy",
+        "Zlecenia na trasach",
+        "W magazynie",
+        "Wymaga uwagi",
+        "Oszczędności",
+        "Wykorzystanie floty",
+    ]
+    summary = pd.read_excel(book, "Podsumowanie")
+    assert "Wskaźnik" in summary.columns
+    assert any(summary["Wskaźnik"] == "Zaplanowane (jedzie)")
+    routes = pd.read_excel(book, "Trasy")
+    assert "Pojazd" in routes.columns
+    assert "SLA" in routes.columns
+    orders = pd.read_excel(book, "Zlecenia na trasach")
+    assert list(orders["Kolejność"]) == sorted(orders["Kolejność"])
+
+
+def test_export_report_with_comparison(db_session: Session) -> None:
+    run_a = _seed_plan(db_session)
+    VehicleRepository(db_session).add(
+        Vehicle(
+            code="T2",
+            vehicle_type=VehicleType.TRUCK,
+            pallet_capacity=10,
+            weight_capacity_kg=12000,
+            is_placeholder=False,
+        )
+    )
+    run_b = (
+        PlanningService(db_session, settings=_settings())
+        .run_plan(
+            username="tester",
+            force_new=True,
+        )
+        .run_id
+    )
+    bundle = build_report_xlsx_data(
+        db_session,
+        run_id=run_b,
+        compare_run_id=run_a,
+        settings=_settings(),
+    )
+    assert bundle is not None
+    assert bundle.comparison is not None
+    xlsx = export_report_xlsx(bundle)
+    book = pd.ExcelFile(BytesIO(xlsx))
+    assert "Porównanie" in book.sheet_names
+    assert report_export_filename(run_b, compare_run_id=run_a).endswith(".xlsx")
+
+
+def test_export_respects_selection(db_session: Session) -> None:
+    run_id = _seed_plan(db_session)
+    bundle = build_report_xlsx_data(db_session, run_id=run_id, settings=_settings())
+    assert bundle is not None
+    selection = ReportExportSelection(
+        sheets=frozenset({ReportSheetId.SUMMARY, ReportSheetId.SAVINGS}),
+    )
+    xlsx = export_report_xlsx(bundle, selection=selection)
+    book = pd.ExcelFile(BytesIO(xlsx))
+    assert book.sheet_names == ["Podsumowanie", "Oszczędności"]
+
+
+def test_export_comparison_only_when_selected_and_available(db_session: Session) -> None:
+    run_a = _seed_plan(db_session)
+    VehicleRepository(db_session).add(
+        Vehicle(
+            code="T2",
+            vehicle_type=VehicleType.TRUCK,
+            pallet_capacity=10,
+            weight_capacity_kg=12000,
+            is_placeholder=False,
+        )
+    )
+    run_b = (
+        PlanningService(db_session, settings=_settings())
+        .run_plan(
+            username="tester",
+            force_new=True,
+        )
+        .run_id
+    )
+    bundle = build_report_xlsx_data(
+        db_session,
+        run_id=run_b,
+        compare_run_id=run_a,
+        settings=_settings(),
+    )
+    assert bundle is not None
+    assert bundle.comparison is not None
+
+    without_comparison = ReportExportSelection(
+        sheets=frozenset(
+            {
+                ReportSheetId.SUMMARY,
+                ReportSheetId.SAVINGS,
+                ReportSheetId.FLEET,
+            }
+        ),
+    )
+    xlsx = export_report_xlsx(bundle, selection=without_comparison)
+    book = pd.ExcelFile(BytesIO(xlsx))
+    assert "Porównanie" not in book.sheet_names
+
+    with_comparison = ReportExportSelection(
+        sheets=frozenset({ReportSheetId.SUMMARY, ReportSheetId.COMPARISON}),
+    )
+    xlsx_cmp = export_report_xlsx(bundle, selection=with_comparison)
+    book_cmp = pd.ExcelFile(BytesIO(xlsx_cmp))
+    assert book_cmp.sheet_names == ["Podsumowanie", "Porównanie"]
+
+
+def test_export_report_empty_run_returns_none(db_session: Session) -> None:
+    assert build_report_xlsx_data(db_session, run_id=99999, settings=_settings()) is None
 
 
 def test_pallet_update_approved_only(db_session: Session) -> None:

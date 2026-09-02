@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 DEFAULT_DELIVERY_DAYS = 7
+DEFAULT_SHIP_LEAD_DAYS = 2
 
 
 class DomainError(Exception):
@@ -120,7 +122,20 @@ class Order(BaseModel):
     pickup_location: Location
     delivery_location: Location
     delivery_date: date
+    must_leave_by: date | None = None
     status: OrderStatus = OrderStatus.NEW
+
+    @model_validator(mode="after")
+    def _ensure_must_leave_by(self) -> Self:
+        if self.must_leave_by is None:
+            from crossdock.domain.sla import must_leave_by_from_delivery
+
+            object.__setattr__(
+                self,
+                "must_leave_by",
+                must_leave_by_from_delivery(self.delivery_date, DEFAULT_SHIP_LEAD_DAYS),
+            )
+        return self
 
     @classmethod
     def create(
@@ -131,7 +146,9 @@ class Order(BaseModel):
         pickup_location: Location,
         delivery_location: Location,
         delivery_date: date | None = None,
+        must_leave_by: date | None = None,
         default_delivery_days: int = DEFAULT_DELIVERY_DAYS,
+        ship_lead_days: int = DEFAULT_SHIP_LEAD_DAYS,
         as_of: date | None = None,
         status: OrderStatus = OrderStatus.NEW,
     ) -> Order:
@@ -139,17 +156,26 @@ class Order(BaseModel):
 
         When ``delivery_date`` is missing the order gets
         ``as_of + default_delivery_days`` calendar days (``as_of`` falls
-        back to the real calendar today).
+        back to the real calendar today). ``must_leave_by`` may come from
+        import; otherwise it is derived from delivery date and lead days.
         """
+        from crossdock.domain.sla import resolve_must_leave_by
+
         if delivery_date is None:
             base = as_of if as_of is not None else date.today()
             delivery_date = base + timedelta(days=default_delivery_days)
+        leave = resolve_must_leave_by(
+            delivery_date=delivery_date,
+            must_leave_by_imported=must_leave_by,
+            ship_lead_days=ship_lead_days,
+        )
         return cls(
             delivery_code=delivery_code,
             shipments=shipments,
             pickup_location=pickup_location,
             delivery_location=delivery_location,
             delivery_date=delivery_date,
+            must_leave_by=leave,
             status=status,
         )
 

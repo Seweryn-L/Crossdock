@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from crossdock.config import Settings, effective_planning_date, get_settings
 from crossdock.distance.haversine import HaversineDistanceProvider
 from crossdock.domain.models import OrderStatus
-from crossdock.domain.sla import slack_days
+from crossdock.domain.sla import slack_days_for_order
 from crossdock.optimization.buffering import decide_buffer
 from crossdock.optimization.dto import BufferCandidate, BufferDecision, BufferRates
 from crossdock.services.plan_view import build_plan_view
@@ -77,7 +77,12 @@ def list_buffer_candidates(
                 weight_kg=weight,
                 pallet_count=max(int(pallets), 1),
                 distance_km=km,
-                slack_days=slack_days(order.delivery_date, planning, lead),
+                slack_days=slack_days_for_order(
+                    must_leave_by=order.must_leave_by,
+                    delivery_date=order.delivery_date,
+                    planning_date=planning,
+                    ship_lead_days=lead,
+                ),
             )
         )
     return candidates

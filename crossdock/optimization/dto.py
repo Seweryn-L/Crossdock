@@ -121,6 +121,7 @@ class RoutingResult:
     unrouted_order_ids: tuple[int, ...]
     status: str
     wall_time_s: float
+    trimmed_order_ids: tuple[int, ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 

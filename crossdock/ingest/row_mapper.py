@@ -96,23 +96,125 @@ def _weight_kg(value: Any, unit: str) -> float | None:
     return raw
 
 
+def _split_id_list(value: Any) -> list[str]:
+    """Split comma-separated reference / TMS IDs from one spreadsheet cell."""
+    text = _as_str(value)
+    if not text:
+        return []
+    if "," not in text:
+        return [text]
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _weight_parts_kg(value: Any, unit: str) -> list[float]:
+    """Parse one or more weights from a cell (comma-separated SKU weights)."""
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    if "," in text:
+        parts: list[float] = []
+        for piece in text.split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            raw = _as_float(piece)
+            if raw is None:
+                continue
+            converted = raw * LB_TO_KG if unit == "lb" else raw
+            parts.append(converted)
+        return parts
+    single = _weight_kg(value, unit)
+    return [single] if single is not None else []
+
+
+def _pick_weight(weights: list[float], index: int, count: int) -> float | None:
+    if not weights:
+        return None
+    if len(weights) == count:
+        return weights[index]
+    if len(weights) == 1:
+        return weights[0]
+    if index < len(weights):
+        return weights[index]
+    return weights[-1]
+
+
+def _build_shipments(
+    delivery_refs: list[str],
+    shipment_ids: list[str],
+    weights: list[float],
+    *,
+    pallet_count: int | None,
+) -> list[Shipment]:
+    """Expand one spreadsheet row into one or more domain shipments."""
+    if len(delivery_refs) > 1:
+        count = len(delivery_refs)
+        out: list[Shipment] = []
+        for i, ref in enumerate(delivery_refs):
+            if len(shipment_ids) == count:
+                shipment_number = shipment_ids[i]
+            elif len(shipment_ids) == 1:
+                shipment_number = ref
+            elif len(shipment_ids) > i:
+                shipment_number = shipment_ids[i]
+            elif shipment_ids:
+                shipment_number = f"{shipment_ids[0]}-{i + 1}"
+            else:
+                shipment_number = ref
+            out.append(
+                Shipment(
+                    shipment_number=shipment_number,
+                    pallet_count=pallet_count,
+                    weight_kg=_pick_weight(weights, i, count),
+                )
+            )
+        return out
+
+    if len(shipment_ids) > 1:
+        count = len(shipment_ids)
+        return [
+            Shipment(
+                shipment_number=shipment_ids[i],
+                pallet_count=pallet_count,
+                weight_kg=_pick_weight(weights, i, count),
+            )
+            for i in range(count)
+        ]
+
+    shipment_number = shipment_ids[0] if shipment_ids else delivery_refs[0]
+    total_weight = sum(weights) if weights else None
+    return [
+        Shipment(
+            shipment_number=shipment_number,
+            pallet_count=pallet_count,
+            weight_kg=total_weight,
+        )
+    ]
+
+
 def row_to_shipment_and_locations(
     row: dict[str, Any],
     mapping: ExcelColumnMapping,
     *,
     default_delivery_days: int,
+    ship_lead_days: int = 2,
     as_of: date | None = None,
 ) -> Order:
     """Build a single-shipment Order from one spreadsheet row.
 
     Caller groups rows by delivery_code into multi-shipment orders.
     """
-    delivery_code = _as_str(_cell(row, mapping, "delivery_code"))
-    shipment_number = _as_str(_cell(row, mapping, "shipment_number"))
-    if not delivery_code:
+    delivery_code_raw = _cell(row, mapping, "delivery_code")
+    shipment_number_raw = _cell(row, mapping, "shipment_number")
+    delivery_refs = _split_id_list(delivery_code_raw)
+    shipment_ids = _split_id_list(shipment_number_raw)
+    if not delivery_refs:
         raise ValueError("brak kodu dostawy (delivery_code)")
-    if not shipment_number:
+    if not shipment_ids and len(delivery_refs) == 1:
         raise ValueError("brak numeru przesyłki (shipment_number)")
+    delivery_code = _as_str(delivery_code_raw) or delivery_refs[0]
 
     pickup_name = _as_str(_cell(row, mapping, "pickup_name"))
     delivery_name = _as_str(_cell(row, mapping, "delivery_name"))
@@ -130,25 +232,33 @@ def row_to_shipment_and_locations(
             raise ValueError(f"niepoprawna liczba palet: {exc}") from exc
 
     try:
-        weight_kg = _weight_kg(_cell(row, mapping, "weight_kg"), mapping.weight_unit)
+        weight_parts = _weight_parts_kg(_cell(row, mapping, "weight_kg"), mapping.weight_unit)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"niepoprawna waga: {exc}") from exc
+
+    shipments = _build_shipments(
+        delivery_refs,
+        shipment_ids,
+        weight_parts,
+        pallet_count=pallet_count,
+    )
 
     try:
         delivery_date = _parse_date(_cell(row, mapping, "delivery_date"), mapping.date_formats)
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
 
+    must_leave_by: date | None = None
+    if "must_leave_by" in mapping.columns:
+        try:
+            must_leave_by = _parse_date(_cell(row, mapping, "must_leave_by"), mapping.date_formats)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
     try:
         return Order.create(
             delivery_code=delivery_code,
-            shipments=[
-                Shipment(
-                    shipment_number=shipment_number,
-                    pallet_count=pallet_count,
-                    weight_kg=weight_kg,
-                )
-            ],
+            shipments=shipments,
             pickup_location=Location(
                 name=pickup_name,
                 city=_as_str(_cell(row, mapping, "pickup_city")),
@@ -162,7 +272,9 @@ def row_to_shipment_and_locations(
                 postal_code=_as_str(_cell(row, mapping, "delivery_postal_code")),
             ),
             delivery_date=delivery_date,
+            must_leave_by=must_leave_by,
             default_delivery_days=default_delivery_days,
+            ship_lead_days=ship_lead_days,
             as_of=as_of,
         )
     except ValidationError as exc:

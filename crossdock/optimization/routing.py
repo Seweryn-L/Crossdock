@@ -210,6 +210,7 @@ def solve_routes(request: RoutingRequest) -> RoutingResult:
     per_vehicle_limit = max(1.0, request.time_limit_s / max(1, len(request.vehicles)))
     routes: list[VehicleRoute] = []
     unrouted: list[int] = []
+    trimmed_all: list[int] = []
     warnings: list[str] = []
     any_routed = False
 
@@ -225,6 +226,7 @@ def solve_routes(request: RoutingRequest) -> RoutingResult:
         )
         warnings.extend(warns)
         unrouted.extend(trimmed_ids)
+        trimmed_all.extend(trimmed_ids)
         if route is not None and route.drop_count > 0:
             routes.append(route)
             any_routed = True
@@ -235,5 +237,6 @@ def solve_routes(request: RoutingRequest) -> RoutingResult:
         unrouted_order_ids=tuple(unrouted),
         status=status,
         wall_time_s=time.perf_counter() - started,
+        trimmed_order_ids=tuple(trimmed_all),
         warnings=tuple(warnings),
     )

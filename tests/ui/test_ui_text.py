@@ -106,6 +106,38 @@ def test_selection_column_is_pinned_checkbox() -> None:
     assert "headerCheckboxSelection" not in single
 
 
+def test_grid_default_col_def_locks_columns() -> None:
+    from crossdock.ui.widgets import grid_default_col_def
+
+    col_def = grid_default_col_def()
+    assert col_def["suppressMovable"] is True
+    assert col_def["suppressHeaderMenuButton"] is True
+    assert col_def["lockVisible"] is True
+
+
+def test_route_action_error_pl_maps_depart_first() -> None:
+    from crossdock.text_pl import route_action_error_pl
+
+    msg = route_action_error_pl(
+        ValueError('Zrealizować można tylko trasę w drodze (najpierw „Wyjechało").'),
+        vehicle="T1",
+    )
+    assert "Wyjechało" in msg
+    assert msg.startswith("T1:")
+
+
+def test_notify_once_dedupes() -> None:
+    from crossdock.ui import widgets
+
+    widgets.reset_notify_cache_for_tests()
+    calls: list[str] = []
+    widgets.ui.notify = lambda message, **kwargs: calls.append(message)  # type: ignore[method-assign]
+    widgets.notify_once("k", "same", type="negative")
+    widgets.notify_once("k", "same", type="negative")
+    assert calls == ["same"]
+    widgets.reset_notify_cache_for_tests()
+
+
 def test_theme_bootstrap_avoids_light_root_when_dark() -> None:
     layout = (UI_DIR / "layout.py").read_text(encoding="utf-8")
     assert "cd-theme" in layout

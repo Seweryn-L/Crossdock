@@ -2,10 +2,68 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from nicegui import ui
+
+_notify_cache: dict[str, tuple[float, str]] = {}
+
+
+def grid_default_col_def(*, sortable: bool = True, resizable: bool = False) -> dict[str, Any]:
+    """Locked column headers for operational grids (no drag/hide)."""
+    return {
+        "sortable": sortable,
+        "resizable": resizable,
+        "suppressMovable": True,
+        "suppressHeaderMenuButton": True,
+        "lockVisible": True,
+    }
+
+
+def notify_once(key: str, message: str, *, type: str = "info", ttl_s: float = 3.0) -> None:
+    """Show a toast at most once per key+message within ttl_s seconds."""
+    now = time.monotonic()
+    prev = _notify_cache.get(key)
+    if prev is not None and now - prev[0] < ttl_s and prev[1] == message:
+        return
+    _notify_cache[key] = (now, message)
+    ui.notify(message, type=type)
+
+
+def notify_route_batch_results(
+    *,
+    dedupe_key: str,
+    failures: Sequence[str],
+    failure_title: str,
+    success_message: str | None = None,
+    partial_title: str | None = None,
+) -> None:
+    """One summary toast for batch route actions instead of per-row notifications."""
+    if failures and success_message is None:
+        body = _format_batch_lines(failures)
+        notify_once(dedupe_key, f"{failure_title}:\n{body}", type="negative")
+        return
+    if success_message:
+        ui.notify(success_message, type="positive")
+    if failures:
+        title = partial_title or failure_title
+        body = _format_batch_lines(failures, limit=3)
+        notify_once(f"{dedupe_key}:partial", f"{title}:\n{body}", type="warning")
+
+
+def _format_batch_lines(items: Sequence[str], *, limit: int = 5) -> str:
+    shown = items[:limit]
+    lines = "\n".join(f"• {item}" for item in shown)
+    if len(items) > limit:
+        lines += f"\n… i {len(items) - limit} więcej"
+    return lines
+
+
+def reset_notify_cache_for_tests() -> None:
+    """Clear dedupe cache (unit tests only)."""
+    _notify_cache.clear()
 
 
 def selection_column(*, multiple: bool) -> dict[str, Any]:

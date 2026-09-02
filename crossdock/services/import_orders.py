@@ -108,6 +108,9 @@ class ImportOrdersService:
         self._source = source or ExcelOrderSource(
             self._mapping,
             default_delivery_days=days,
+            ship_lead_days=(
+                settings.ship_lead_days if settings is not None else get_settings().ship_lead_days
+            ),
             as_of=as_of,
         )
 

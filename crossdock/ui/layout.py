@@ -556,6 +556,42 @@ body, .nicegui-content, .q-page, .q-layout {
   color: var(--cd-muted) !important;
   margin-top: 0.15rem !important;
 }
+.cd-gen-kpi-card {
+  font-family: var(--cd-font) !important;
+  background: var(--cd-card) !important;
+  border: 1px solid var(--cd-border) !important;
+  border-radius: 12px !important;
+  padding: 1rem 1.1rem !important;
+  width: 100% !important;
+}
+.cd-gen-compare {
+  font-family: var(--cd-font) !important;
+  background: var(--cd-card) !important;
+  border: 1px solid var(--cd-border) !important;
+  border-radius: 12px !important;
+  padding: 0.85rem 1rem !important;
+}
+.cd-delta-good {
+  color: #15803d !important;
+  font-weight: 600 !important;
+}
+.cd-delta-bad {
+  color: #b91c1c !important;
+  font-weight: 600 !important;
+}
+.cd-map-alert {
+  background: #fef3c7 !important;
+  border-left: 3px solid #d97706 !important;
+  padding: 0.35rem 0.5rem !important;
+  margin-bottom: 0.35rem !important;
+  font-size: 0.8125rem !important;
+  color: #92400e !important;
+}
+.cd-map-route-tooltip {
+  font-size: 0.8125rem !important;
+  line-height: 1.35 !important;
+  max-width: 280px !important;
+}
 .cd-ops-foot {
   display: grid !important;
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;

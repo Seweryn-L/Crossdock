@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, effective_planning_date, get_settings
-from crossdock.domain.sla import must_leave_by, route_should_send, slack_days
+from crossdock.domain.attention import AttentionReason, attention_reason_pl
+from crossdock.domain.sla import resolve_must_leave_by, route_should_send, slack_days_for_order
 from crossdock.storage.repositories import AssignmentRepository, OrderRepository, VehicleRepository
 from crossdock.storage.tables import AssignmentItemRow, AssignmentRunRow
 from crossdock.text_pl import format_plan_label
@@ -36,6 +37,7 @@ class PlanSummary:
     total_cost_eur: float | None
     display_name: str | None = None
     created_at: datetime | None = None
+    attention_by_reason: dict[str, int] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -83,14 +85,20 @@ class InTransitRoute:
     drop_summary: str
 
 
-def classify_item(*, vehicle_code: str, sequence: int | None) -> tuple[PlanBucket, str]:
+def classify_item(
+    *,
+    vehicle_code: str,
+    sequence: int | None,
+    attention_reason: str | None = None,
+) -> tuple[PlanBucket, str, str | None]:
     if sequence is not None and vehicle_code not in {"UNASSIGNED", "UNROUTED"}:
-        return "riding", ""
+        return "riding", "", None
     if vehicle_code == "UNASSIGNED":
-        return "staying", REASON_STAYING
+        return "staying", REASON_STAYING, None
     if vehicle_code == "UNROUTED":
-        return "attention", REASON_ATTENTION
-    return "attention", REASON_UNKNOWN
+        code = attention_reason or AttentionReason.UNKNOWN
+        return "attention", attention_reason_pl(code), code
+    return "attention", REASON_UNKNOWN, AttentionReason.UNKNOWN
 
 
 def _min_slack_sort_key(row: dict[str, object]) -> int:
@@ -103,6 +111,7 @@ def build_plan_view(
     settings: Settings | None = None,
     *,
     run_id: int | None = None,
+    include_completed: bool = True,
 ) -> PlanView:
     cfg = settings
     if cfg is None:
@@ -138,6 +147,7 @@ def build_plan_view(
     riding: list[dict[str, object]] = []
     staying: list[dict[str, object]] = []
     attention: list[dict[str, object]] = []
+    attention_by_reason: dict[str, int] = defaultdict(int)
     staying_ids: list[int] = []
     weight_by_vehicle: dict[str, float] = {}
     orders_by_vehicle: dict[str, set[int]] = defaultdict(set)
@@ -149,10 +159,25 @@ def build_plan_view(
     for item in items:
         order = order_repo.get_by_id(item.order_id)
         if order is not None:
-            slack_by_order[item.order_id] = slack_days(order.delivery_date, planning, lead)
-            deadline_by_order[item.order_id] = must_leave_by(order.delivery_date, lead)
-        bucket, reason = classify_item(vehicle_code=item.vehicle_code, sequence=item.sequence)
-        row = _item_to_row(item, reason, slack=slack_by_order.get(item.order_id))
+            slack_by_order[item.order_id] = slack_days_for_order(
+                must_leave_by=order.must_leave_by,
+                delivery_date=order.delivery_date,
+                planning_date=planning,
+                ship_lead_days=lead,
+            )
+            deadline_by_order[item.order_id] = resolve_must_leave_by(
+                delivery_date=order.delivery_date,
+                must_leave_by_imported=order.must_leave_by,
+                ship_lead_days=lead,
+            )
+        bucket, reason, reason_code = classify_item(
+            vehicle_code=item.vehicle_code,
+            sequence=item.sequence,
+            attention_reason=item.attention_reason,
+        )
+        row = _item_to_row(
+            item, reason, slack=slack_by_order.get(item.order_id), reason_code=reason_code
+        )
         if bucket == "riding":
             riding.append(row)
             weight_by_vehicle[item.vehicle_code] = weight_by_vehicle.get(
@@ -168,10 +193,14 @@ def build_plan_view(
             staying_ids.append(item.order_id)
         else:
             attention.append(row)
+            if reason_code:
+                attention_by_reason[str(reason_code)] += 1
 
     route_rows: list[dict[str, object]] = []
     below_count = 0
     for route in routes:
+        if not include_completed and route.route_status == "completed":
+            continue
         vehicle = vehicles.get_by_code(route.vehicle_code)
         used_kg = weight_by_vehicle.get(route.vehicle_code, 0.0)
         cap = vehicle.weight_capacity_kg if vehicle is not None else None
@@ -215,6 +244,7 @@ def build_plan_view(
                 "drop_summary": drop_summary,
                 "distance_km": round(route.distance_km, 1),
                 "cost_eur": round(route.cost_eur, 2),
+                "fill_label": f"{round(fill * 100)}%" if fill is not None else "—",
                 "weight_fill_pct": round(fill * 100) if fill is not None else None,
                 "below_min_fill": below,
                 "disposition": "send" if send else "hold",
@@ -222,6 +252,15 @@ def build_plan_view(
                 "deadline_date": deadline.isoformat() if deadline is not None else None,
                 "deadline_label": deadline.strftime("%d.%m.%Y") if deadline is not None else "—",
                 "min_slack": min_slack,
+                "approved_at": (
+                    route.approved_at.strftime("%d.%m %H:%M") if route.approved_at else None
+                ),
+                "departed_at": (
+                    route.departed_at.strftime("%d.%m %H:%M") if route.departed_at else None
+                ),
+                "completed_at": (
+                    route.completed_at.strftime("%d.%m %H:%M") if route.completed_at else None
+                ),
             }
         )
     known = {r.vehicle_code for r in routes}
@@ -238,6 +277,7 @@ def build_plan_view(
                 "distance_km": 0.0,
                 "cost_eur": 0.0,
                 "weight_fill_pct": None,
+                "fill_label": "—",
                 "below_min_fill": False,
                 "disposition": "send",
                 "sla_label": "Wyślij",
@@ -292,6 +332,7 @@ def build_plan_view(
         total_cost_eur=run.total_cost_eur,
         display_name=run.display_name,
         created_at=run.created_at,
+        attention_by_reason=dict(attention_by_reason),
     )
     return PlanView(
         summary=summary,
@@ -307,7 +348,11 @@ def build_plan_view(
 
 
 def _item_to_row(
-    item: AssignmentItemRow, reason: str, *, slack: int | None = None
+    item: AssignmentItemRow,
+    reason: str,
+    *,
+    slack: int | None = None,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
     sla = "—"
     if slack is not None:
@@ -326,6 +371,7 @@ def _item_to_row(
         "weight_kg": round(item.weight_kg, 1),
         "fill_pct": (f"{item.fill_ratio * 100:.0f}%" if item.fill_ratio is not None else "—"),
         "reason": reason or "—",
+        "reason_code": reason_code or "",
         "slack_days": slack,
         "sla": sla,
     }
@@ -339,8 +385,9 @@ def _resolve_run(repo: AssignmentRepository, run_id: int | None) -> AssignmentRu
     return repo.get_latest_run()
 
 
-def in_transit_route_from_row(row: dict[str, object]) -> InTransitRoute | None:
-    if row.get("route_status") != "approved":
+def departure_route_from_row(row: dict[str, object]) -> InTransitRoute | None:
+    status = row.get("route_status")
+    if status not in {"approved", "in_transit"}:
         return None
     raw_id = row.get("vehicle_id")
     if not isinstance(raw_id, int):
@@ -354,8 +401,26 @@ def in_transit_route_from_row(row: dict[str, object]) -> InTransitRoute | None:
         vehicle_code=str(row.get("vehicle") or ""),
         order_count=order_count,
         distance_km=distance_km,
-        route_status="approved",
+        route_status=str(status),
         drop_summary=str(row.get("drop_summary") or ""),
+    )
+
+
+def in_transit_route_from_row(row: dict[str, object]) -> InTransitRoute | None:
+    if row.get("route_status") != "in_transit":
+        return None
+    return departure_route_from_row(row)
+
+
+def list_departure_routes(
+    session: Session,
+    *,
+    run_id: int | None = None,
+) -> tuple[InTransitRoute, ...]:
+    """Approved and in-transit routes of the active plan (warehouse)."""
+    view = build_plan_view(session, run_id=run_id, include_completed=False)
+    return tuple(
+        route for row in view.routes if (route := departure_route_from_row(row)) is not None
     )
 
 
@@ -364,8 +429,8 @@ def list_in_transit_routes(
     *,
     run_id: int | None = None,
 ) -> tuple[InTransitRoute, ...]:
-    """Approved routes of the active plan that have not been completed yet."""
-    view = build_plan_view(session, run_id=run_id)
+    """In-transit routes of the active plan (warehouse / dashboard)."""
+    view = build_plan_view(session, run_id=run_id, include_completed=False)
     return tuple(
         route for row in view.routes if (route := in_transit_route_from_row(row)) is not None
     )

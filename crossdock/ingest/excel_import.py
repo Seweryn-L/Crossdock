@@ -37,7 +37,15 @@ def _merge_orders(parts: list[Order]) -> Order:
                 continue
             seen.add(shipment.shipment_number)
             shipments.append(shipment)
-    return first.model_copy(update={"shipments": shipments})
+    earliest_delivery = min(p.delivery_date for p in parts)
+    earliest_leave = min(p.must_leave_by for p in parts if p.must_leave_by is not None)
+    return first.model_copy(
+        update={
+            "shipments": shipments,
+            "delivery_date": earliest_delivery,
+            "must_leave_by": earliest_leave,
+        }
+    )
 
 
 class ExcelOrderSource:
@@ -48,10 +56,12 @@ class ExcelOrderSource:
         mapping: ExcelColumnMapping,
         *,
         default_delivery_days: int = 7,
+        ship_lead_days: int = 2,
         as_of: date | None = None,
     ) -> None:
         self._mapping = mapping
         self._default_delivery_days = default_delivery_days
+        self._ship_lead_days = ship_lead_days
         self._as_of = as_of
 
     def load(self, source: Path | bytes) -> ImportReport:
@@ -84,6 +94,7 @@ class ExcelOrderSource:
                     row,
                     self._mapping,
                     default_delivery_days=self._default_delivery_days,
+                    ship_lead_days=self._ship_lead_days,
                     as_of=self._as_of,
                 )
             except (ValueError, KeyError, TypeError) as exc:
