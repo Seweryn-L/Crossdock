@@ -131,16 +131,14 @@ Te kwoty są **szkicem**, nie cennikiem przewoźnika.
 
 ## 8. Raporty (KPI)
 
-Raport i eksport Excel pokazują **fakty z planu**, bez sztucznego baseline „1 zlecenie = 1 pojazd”:
+Raport i eksport Excel pokazują **fakty z planu** (bez fikcyjnego scenariusza „1 zlecenie = 1 pojazd”):
 
 - **Koszt planu [€]** — suma kosztów tras (`km_trasy × stawka €/km`)
 - **Łączny dystans [km]**
-- **Wykorzystanie floty** — zapełnienie wagowe per pojazd (waga / ładowność)
+- **Koszty** — koszt per pojazd/trasa, stawka efektywna €/km, zapełnienie wagowe
 - **Porównanie generacji** — delta kosztu, km, pojazdów, zapełnienia, zleceń w magazynie
 
-Stawka `s` = Parametry → Stawka €/km (`cost_per_km`).
-
-Metryka „oszczędności vs baseline” została wycofana — nie odzwierciedlała realnej logistyki firmy.
+Stawka `s` = Parametry → Stawka €/km (`cost_per_km`), z opcjonalnym override per pojazd.
 
 ---
 

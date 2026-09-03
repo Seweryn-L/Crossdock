@@ -22,7 +22,7 @@ SHEET_LABELS_PL: dict[ReportSheetId, str] = {
     ReportSheetId.ROUTED_ORDERS: "Zlecenia na trasach",
     ReportSheetId.WAREHOUSE: "W magazynie",
     ReportSheetId.ATTENTION: "Wymaga uwagi",
-    ReportSheetId.FLEET: "Wykorzystanie floty",
+    ReportSheetId.FLEET: "Koszty",
     ReportSheetId.COMPARISON: "Porównanie",
 }
 

@@ -129,10 +129,25 @@ def format_plan_label(
     plan_status: str | None,
     created_at: datetime | None,
 ) -> str:
-    """Dispatcher label: `{name or Generacja} · #{id} · {status} · {dd.mm HH:MM}`."""
+    """Technical/audit label: `{name or Generacja} · #{id} · {status} · {dd.mm HH:MM}`."""
     status = plan_status_pl(plan_status)
     stamp = created_at.strftime("%d.%m %H:%M") if created_at is not None else "—"
     name = (display_name or "").strip()
     if name:
         return f"{name} · #{run_id} · {status} · {stamp}"
     return f"Generacja #{run_id} · {status} · {stamp}"
+
+
+def format_plan_summary_title(
+    *,
+    display_name: str | None,
+    plan_status: str | None,
+    created_at: datetime | None,
+) -> str:
+    """Dispatcher-facing summary title without generation id: `{name|status} · {dd.mm HH:MM}`."""
+    status = plan_status_pl(plan_status)
+    stamp = created_at.strftime("%d.%m %H:%M") if created_at is not None else "—"
+    name = (display_name or "").strip()
+    if name:
+        return f"{name} · {status} · {stamp}"
+    return f"{status} · {stamp}"

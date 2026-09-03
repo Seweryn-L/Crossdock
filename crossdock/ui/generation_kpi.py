@@ -66,12 +66,13 @@ class GenerationKpiPanel:
             f"Wymaga uwagi: {kpi.attention}"
         )
         self._line_routes.set_text(
-            f"Trasy: {kpi.route_count}  ·  "
-            f"Pojazdy: {kpi.vehicles_used}  ·  "
+            f"Zaproponowane trasy: {kpi.route_count}  ·  "
+            f"Przydzielone pojazdy: {kpi.vehicles_used}  ·  "
             f"Śr. zapełnienie: {_fmt_pct_ratio(kpi.avg_fill_ratio)}"
         )
         self._line_costs.set_text(
-            f"Dystans: {_fmt_km(kpi.total_distance_km)}  ·  Koszt: {_fmt_eur(kpi.total_cost_eur)}"
+            f"Łączny dystans: {_fmt_km(kpi.total_distance_km)}  ·  "
+            f"Przybliżony koszt: {_fmt_eur(kpi.total_cost_eur)}"
         )
 
         self._line_attention.clear()

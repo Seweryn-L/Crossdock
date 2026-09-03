@@ -168,8 +168,11 @@ def test_approve_plan_sets_approved_and_blocks_second(db_session: Session) -> No
     with pytest.raises(ValueError, match="już zatwierdzony"):
         service.approve_plan(run_id=plan.run_id, username="approver")
 
-    with pytest.raises(ValueError, match="wolnych pojazdów"):
-        service.run_plan(username="tester")
+    vehicle = VehicleRepository(db_session).list_all()[0]
+    assert vehicle.is_busy is True
+    # New / alternative generation ignores global is_busy and still sees the fleet.
+    request = service.prepare_plan_request(force_new=True)
+    assert any(v.id == vehicle.id for v in request.solver_vehicles)
 
 
 def test_unlock_plan_allows_regenerate(db_session: Session) -> None:
@@ -522,3 +525,30 @@ def test_delete_proposed_payload_keeps_completed_route(db_session: Session) -> N
     routes = repo.list_routes_for_run(plan.run_id)
     assert len(routes) == 1
     assert routes[0].route_status == "completed"
+
+
+def test_new_generation_gets_full_fleet_despite_busy_in_other_run(db_session: Session) -> None:
+    _add_vehicle(db_session, code="TRUCK-01")
+    _add_order(db_session, code="A", weight=2000, lat=48.85, lon=2.35)
+    _add_order(db_session, code="B", weight=2000, lat=50.85, lon=4.35)
+
+    service = PlanningService(db_session, settings=_settings())
+    plan_a = service.run_plan(username="tester")
+    vehicle_id = _first_routed_vehicle_id(db_session, plan_a.run_id)
+    service.approve_route(run_id=plan_a.run_id, vehicle_id=vehicle_id, username="approver")
+
+    vehicle = VehicleRepository(db_session).get(vehicle_id)
+    assert vehicle is not None
+    assert vehicle.is_busy is True
+    assert VehicleRepository(db_session).list_available() == []
+
+    # Same run (partial): vehicle stays excluded from solver fleet.
+    fleet_a = service.fleet_for_solver(existing_run_id=plan_a.run_id)
+    assert all(v.id != vehicle_id for v in fleet_a)
+
+    # New / alternative generation: full active fleet, ignoring global is_busy.
+    fleet_new = service.fleet_for_solver(existing_run_id=None)
+    assert any(v.id == vehicle_id for v in fleet_new)
+
+    request_b = service.prepare_plan_request(force_new=True)
+    assert any(v.id == vehicle_id for v in request_b.solver_vehicles)

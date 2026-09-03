@@ -87,6 +87,7 @@ class VehicleRoutingInput:
     drop_weights_kg: tuple[float, ...]
     # Square matrix in metres; size = 1 + len(drop_keys).
     distance_matrix_m: tuple[tuple[int, ...], ...]
+    cost_per_km: float = 1.2
 
 
 @dataclass(frozen=True)

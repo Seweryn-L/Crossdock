@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from crossdock.config import Settings, get_settings
 from crossdock.services.plan_view import build_plan_view
+from crossdock.text_pl import format_plan_summary_title
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,11 @@ def build_generation_kpi(
 
     return GenerationKpi(
         run_id=summary.run_id,
-        label=summary.label,
+        label=format_plan_summary_title(
+            display_name=summary.display_name,
+            plan_status=summary.plan_status,
+            created_at=summary.created_at,
+        ),
         plan_status=summary.plan_status,
         orders_in_planning=orders_in_planning,
         riding=riding,

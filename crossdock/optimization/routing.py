@@ -222,7 +222,7 @@ def solve_routes(request: RoutingRequest) -> RoutingResult:
             max_drops=request.max_drops_per_route,
             time_limit_s=per_vehicle_limit,
             seed=request.seed,
-            cost_per_km=request.cost_per_km,
+            cost_per_km=vehicle.cost_per_km,
         )
         warnings.extend(warns)
         unrouted.extend(trimmed_ids)

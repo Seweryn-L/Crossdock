@@ -43,6 +43,18 @@ def get_session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
+def reset_engine() -> None:
+    """Dispose pooled connections and clear engine/session caches (e.g. after restore)."""
+    try:
+        engine = get_engine()
+    except Exception:
+        engine = None
+    get_session_factory.cache_clear()
+    get_engine.cache_clear()
+    if engine is not None:
+        engine.dispose()
+
+
 @contextmanager
 def session_scope() -> Iterator[Session]:
     """Transactional scope: commit on success, rollback on error."""

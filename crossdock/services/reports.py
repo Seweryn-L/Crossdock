@@ -207,7 +207,14 @@ def build_report_xlsx_data(
         staying_orders=tuple(_rows_bucket_orders(session, plan_view.staying)),
         attention_summary=tuple(_rows_attention_summary_for(plan_view, kpi)),
         attention_orders=tuple(_rows_bucket_orders(session, plan_view.attention)),
-        fleet_rows=tuple(_rows_fleet_utilization(session, report, plan_view)),
+        fleet_rows=tuple(
+            _rows_fleet_utilization(
+                session,
+                report,
+                plan_view,
+                default_cost_per_km=cfg.cost_per_km,
+            )
+        ),
         comparison=comparison,
     )
 
@@ -463,6 +470,8 @@ def _rows_fleet_utilization(
     session: Session,
     report: ReportBundle,
     plan_view: PlanView,
+    *,
+    default_cost_per_km: float,
 ) -> list[dict[str, Any]]:
     vehicles = VehicleRepository(session)
     util_by_vehicle = {u.vehicle_code: u for u in report.utilization}
@@ -474,7 +483,14 @@ def _rows_fleet_utilization(
     for code, util in sorted(util_by_vehicle.items()):
         vehicle = vehicles.get_by_code(code)
         meta = route_meta.get(code, {})
-        cost_per_km = round(util.cost_eur / util.distance_km, 3) if util.distance_km > 0 else None
+        effective_rate = (
+            round(util.cost_eur / util.distance_km, 3) if util.distance_km > 0 else None
+        )
+        configured_rate: float | None
+        if vehicle is not None and vehicle.cost_per_km is not None:
+            configured_rate = round(float(vehicle.cost_per_km), 3)
+        else:
+            configured_rate = round(float(default_cost_per_km), 3)
         fill_pct = round(util.fill_ratio * 100, 1) if util.fill_ratio is not None else None
         if util.fill_ratio is not None:
             fill_values.append(util.fill_ratio)
@@ -489,12 +505,14 @@ def _rows_fleet_utilization(
                 "Zapełnienie [%]": fill_pct,
                 "Dropy": util.drop_count,
                 "Km": round(util.distance_km, 1),
+                "Stawka €/km": configured_rate,
                 "Koszt €": round(util.cost_eur, 2),
-                "€/km": cost_per_km,
+                "€/km efektywne": effective_rate,
                 "Status trasy": meta.get("route_status_pl") or util.route_status,
             }
         )
     avg_fill = round(sum(fill_values) / len(fill_values) * 100, 1) if fill_values else None
+    avg_rate = round(total_cost / total_km, 3) if total_km > 0 else None
     rows.append(
         {
             "Pojazd": "SUMA / ŚREDNIA",
@@ -504,8 +522,9 @@ def _rows_fleet_utilization(
             "Zapełnienie [%]": avg_fill,
             "Dropy": None,
             "Km": round(total_km, 1),
+            "Stawka €/km": avg_rate,
             "Koszt €": round(total_cost, 2),
-            "€/km": round(total_cost / total_km, 3) if total_km > 0 else None,
+            "€/km efektywne": avg_rate,
             "Status trasy": "",
         }
     )
@@ -601,7 +620,7 @@ def _build_all_sheets(
         ReportSheetId.ROUTED_ORDERS: ("Zlecenia na trasach", list(bundle.routed_orders)),
         ReportSheetId.WAREHOUSE: ("W magazynie", list(bundle.staying_orders)),
         ReportSheetId.ATTENTION: ("Wymaga uwagi", attention_sheet),
-        ReportSheetId.FLEET: ("Wykorzystanie floty", list(bundle.fleet_rows)),
+        ReportSheetId.FLEET: ("Koszty", list(bundle.fleet_rows)),
         ReportSheetId.COMPARISON: (
             "Porównanie",
             _rows_comparison(bundle.comparison) if bundle.comparison is not None else [],
@@ -638,7 +657,7 @@ def export_report_xlsx(
             numeric_cols: set[int] = set()
             if sheet_name == "Trasy":
                 numeric_cols = {5, 9, 10, 11, 12}
-            elif sheet_name == "Wykorzystanie floty":
-                numeric_cols = {4, 5, 6, 7, 8, 9}
+            elif sheet_name == "Koszty":
+                numeric_cols = {3, 4, 5, 6, 7, 8, 9, 10}
             _style_worksheet(ws, numeric_cols=numeric_cols or None)
     return buffer.getvalue()

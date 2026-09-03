@@ -99,6 +99,7 @@ class Vehicle(BaseModel):
     is_active: bool = True
     is_placeholder: bool = True
     is_busy: bool = False
+    cost_per_km: float | None = Field(default=None, gt=0)
 
 
 class Shipment(BaseModel):

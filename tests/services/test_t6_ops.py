@@ -107,7 +107,7 @@ def test_build_and_export_report(db_session: Session) -> None:
         "Zlecenia na trasach",
         "W magazynie",
         "Wymaga uwagi",
-        "Wykorzystanie floty",
+        "Koszty",
     ]
     summary = pd.read_excel(book, "Podsumowanie")
     assert "Wskaźnik" in summary.columns
@@ -117,6 +117,12 @@ def test_build_and_export_report(db_session: Session) -> None:
     assert "SLA" in routes.columns
     orders = pd.read_excel(book, "Zlecenia na trasach")
     assert list(orders["Kolejność"]) == sorted(orders["Kolejność"])
+    costs = pd.read_excel(book, "Koszty")
+    assert "Koszt €" in costs.columns
+    assert "Stawka €/km" in costs.columns
+    blob = " ".join(book.sheet_names).lower()
+    assert "oszczęd" not in blob
+    assert "baseline" not in blob
 
 
 def test_export_report_with_comparison(db_session: Session) -> None:
@@ -161,7 +167,7 @@ def test_export_respects_selection(db_session: Session) -> None:
     )
     xlsx = export_report_xlsx(bundle, selection=selection)
     book = pd.ExcelFile(BytesIO(xlsx))
-    assert book.sheet_names == ["Podsumowanie", "Wykorzystanie floty"]
+    assert book.sheet_names == ["Podsumowanie", "Koszty"]
 
 
 def test_export_comparison_only_when_selected_and_available(db_session: Session) -> None:

@@ -128,6 +128,7 @@ class PlanSolveRequest:
     max_drops_per_route: int
     depot: tuple[float, float]
     cost_per_km: float
+    vehicle_cost_per_km: tuple[tuple[int, float], ...] = ()
     planning_date: date | None = None
     ship_lead_days: int = 2
     extra_warnings: tuple[str, ...] = ()
@@ -253,6 +254,8 @@ def _build_routing_inputs(
     orders_by_id: dict[int, OrderGeoSnapshot],
     depot: tuple[float, float],
     distance: DistanceProvider,
+    cost_per_km_by_vehicle: dict[int, float],
+    default_cost_per_km: float,
 ) -> tuple[list[VehicleRoutingInput], list[str], set[int], dict[str, tuple[float, float]]]:
     """Group assigned orders into drop nodes; skip orders without usable coords."""
     skipped_codes: list[str] = []
@@ -298,6 +301,7 @@ def _build_routing_inputs(
             tuple(round(float(matrix_km[i, j]) * 1000) for j in range(len(points)))
             for i in range(len(points))
         )
+        rate = cost_per_km_by_vehicle.get(load.vehicle_id, default_cost_per_km)
         vehicles_out.append(
             VehicleRoutingInput(
                 vehicle_id=load.vehicle_id,
@@ -306,6 +310,7 @@ def _build_routing_inputs(
                 order_ids_per_drop=tuple(tuple(drops[k][2]) for k in keys),
                 drop_weights_kg=tuple(drops[k][3] for k in keys),
                 distance_matrix_m=matrix_m,
+                cost_per_km=rate,
             )
         )
     return vehicles_out, skipped_codes, no_coords_ids, drop_coords
@@ -341,6 +346,8 @@ def build_routing_bundle(
         orders_by_id=geos_by_id,
         depot=request.depot,
         distance=provider,
+        cost_per_km_by_vehicle=dict(request.vehicle_cost_per_km),
+        default_cost_per_km=request.cost_per_km,
     )
     return RoutingBundle(
         vehicles=tuple(routing_inputs),
@@ -787,13 +794,14 @@ class PlanningService:
         (does not rewrite another plan's approved routes).
         """
         repo = AssignmentRepository(self._session)
-        vehicle_repo = VehicleRepository(self._session)
         order_repo = OrderRepository(self._session)
         target = None if force_new else self._run_for_append(target_run_id)
 
-        vehicles = vehicle_repo.list_available()
+        vehicles = self.fleet_for_solver(
+            existing_run_id=target.id if target is not None else None,
+        )
         if not vehicles:
-            raise ValueError("Brak wolnych pojazdów — odblokuj trasę albo dodaj flotę.")
+            raise ValueError("Brak aktywnych pojazdów — odblokuj trasę albo dodaj flotę.")
 
         extra: list[Order] = []
         existing_run_id: int | None = None
@@ -855,6 +863,16 @@ class PlanningService:
             max_drops_per_route=self._settings.max_drops_per_route,
             depot=(self._settings.depot_latitude, self._settings.depot_longitude),
             cost_per_km=self._settings.cost_per_km,
+            vehicle_cost_per_km=tuple(
+                (
+                    v.id,
+                    float(v.cost_per_km)
+                    if v.cost_per_km is not None
+                    else float(self._settings.cost_per_km),
+                )
+                for v in vehicles
+                if v.id is not None
+            ),
             planning_date=planning,
             ship_lead_days=self._settings.ship_lead_days,
             extra_warnings=tuple(
@@ -1024,6 +1042,24 @@ class PlanningService:
         if run.plan_status in {"draft", "partial"}:
             return run
         return None
+
+    def fleet_for_solver(self, *, existing_run_id: int | None) -> list[Vehicle]:
+        """Active fleet for planning; exclude vehicles locked by this run's protected routes.
+
+        Global ``is_busy`` is ignored so an alternative generation can use the full fleet.
+        """
+        vehicles = VehicleRepository(self._session).list_active()
+        if existing_run_id is None:
+            return vehicles
+        protected_ids = {
+            r.vehicle_id
+            for r in AssignmentRepository(self._session).list_routes_for_run(existing_run_id)
+            if r.route_status in {"approved", "in_transit", "completed"}
+            and r.vehicle_id is not None
+        }
+        if not protected_ids:
+            return vehicles
+        return [v for v in vehicles if v.id not in protected_ids]
 
     def _planned_orders_on_run(self, run_id: int) -> list[Order]:
         extra: list[Order] = []

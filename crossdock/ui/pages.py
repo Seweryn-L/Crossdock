@@ -20,7 +20,7 @@ from crossdock.services.app_settings import (
     editable_settings_snapshot,
     save_runtime_overrides,
 )
-from crossdock.services.backup import run_backup
+from crossdock.services.backup import list_backups, restore_backup, run_backup
 from crossdock.services.buffering import accept_buffer_proposals, compute_buffer_proposals
 from crossdock.services.dashboard import collect_dashboard
 from crossdock.services.generation_compare import compare_generations
@@ -62,6 +62,7 @@ from crossdock.services.reports import (
     export_report_xlsx,
     report_export_filename,
 )
+from crossdock.services.runtime_locks import is_solver_running, set_solver_running
 from crossdock.services.system_status import (
     LOG_FULL_BYTES,
     LOG_PREVIEW_BYTES,
@@ -250,12 +251,17 @@ def _load_planning_context(preferred_run_id: int | None = None) -> dict[str, obj
             + int(route_counts.get("in_transit", 0))
             + int(route_counts.get("completed", 0))
         )
+        append_run_id = (
+            resolved if run is not None and run.plan_status in {"draft", "partial"} else None
+        )
+        solver_vehicles = planning.fleet_for_solver(existing_run_id=append_run_id)
         return {
             "total_orders": counts.total,
             "new_orders": counts.new_status,
             "eligible_orders": counts.new_with_weight,
             "active_vehicles": len(active_vehicles),
             "available_vehicles": len(available_vehicles),
+            "solver_vehicles": len(solver_vehicles),
             "busy_vehicles": busy,
             "fleet_rows": fleet_rows,
             "plan_status": run.plan_status if run is not None else None,
@@ -986,8 +992,6 @@ async def plans_page() -> None:
                 value = ui.label("—").classes("cd-plan-chip-v")
             return wrap, value
 
-        kpi_host = ui.element("div").classes("w-full cd-gen-kpi-wrap mb-2")
-        kpi_panel = GenerationKpiPanel(kpi_host)
         attention_filter_code: dict[str, str | None] = {"code": None}
         all_attention_rows: list[dict[str, object]] = []
 
@@ -1020,15 +1024,6 @@ async def plans_page() -> None:
                     "color=positive"
                 )
                 info_hint(APPROVE_ROUTE_HINT)
-                approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
-                    "color=positive outline"
-                )
-                depart_route_btn = ui.button("Wyjechało", icon="local_shipping").props("outline")
-                info_hint(DEPART_ROUTE_HINT)
-                complete_route_btn = ui.button("Zrealizowane", icon="done").props("color=positive")
-                info_hint(COMPLETE_ROUTE_HINT)
-                unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props("outline")
-                info_hint(UNLOCK_ROUTE_HINT)
                 unlock_btn = ui.button("Odblokuj zatwierdzone", icon="restart_alt").props("outline")
                 map_btn = ui.button("Pokaż na mapie", icon="map").props("outline")
                 advanced_btn = ui.button("Zaawansowane", icon="tune").props("outline dense")
@@ -1056,7 +1051,8 @@ async def plans_page() -> None:
                     info_hint(DELETE_RUN_HINT)
                 ui.label(
                     "Zaawansowane: podgląd starej generacji, nazwa, pusta generacja, usuwanie. "
-                    "W codziennej pracy nie jest to potrzebne — historia jest też w Raportach."
+                    "Nowa generacja to ścieżka porównawcza / eksperymentalna (pełna flota) — "
+                    "nie do codziennej pracy. Historia jest też w Raportach."
                 ).classes("text-sm text-gray-600")
 
             def _toggle_advanced() -> None:
@@ -1141,6 +1137,23 @@ async def plans_page() -> None:
                         "Pokaż zrealizowane",
                         value=bool(app.storage.user.get("plans_show_completed")),
                     ).props("dense")
+                with ui.row().classes("cd-toolbar w-full items-center px-2 flex-wrap"):
+                    approve_route_btn = ui.button("Zatwierdź trasę", icon="check_circle").props(
+                        "color=positive outline dense"
+                    )
+                    info_hint(APPROVE_ROUTE_HINT)
+                    depart_route_btn = ui.button("Wyjechało", icon="local_shipping").props(
+                        "outline dense"
+                    )
+                    info_hint(DEPART_ROUTE_HINT)
+                    complete_route_btn = ui.button("Zrealizowane", icon="done").props(
+                        "color=positive dense"
+                    )
+                    info_hint(COMPLETE_ROUTE_HINT)
+                    unlock_route_btn = ui.button("Odblokuj trasę", icon="lock_open").props(
+                        "outline dense"
+                    )
+                    info_hint(UNLOCK_ROUTE_HINT)
                 with (
                     ui.element("div")
                     .classes("p-3 w-full gap-2")
@@ -1242,21 +1255,25 @@ async def plans_page() -> None:
                                 icon="check_circle",
                                 on_click=lambda: on_approve_route(),
                             ).props("color=positive outline")
+                            info_hint(APPROVE_ROUTE_HINT)
                             ui.button(
                                 "Wyjechało",
                                 icon="local_shipping",
                                 on_click=lambda: on_depart_route(),
                             ).props("outline")
+                            info_hint(DEPART_ROUTE_HINT)
                             ui.button(
                                 "Zrealizowane",
                                 icon="done",
                                 on_click=lambda: on_complete_route(),
                             ).props("color=positive")
+                            info_hint(COMPLETE_ROUTE_HINT)
                             ui.button(
                                 "Odblokuj trasę",
                                 icon="lock_open",
                                 on_click=lambda: on_unlock_route(),
                             ).props("outline")
+                            info_hint(UNLOCK_ROUTE_HINT)
                         enlarge_route_host = ui.element("div").classes("cd-enlarge-host")
 
                     def open_route_enlarge() -> None:
@@ -1417,13 +1434,6 @@ async def plans_page() -> None:
             attention_grid.update()
             attention_empty.set_visibility(len(filtered) == 0)
 
-        def _on_attention_reason_click(code: str) -> None:
-            attention_filter_code["code"] = code
-            tabs.value = tab_attention
-            _apply_attention_filter()
-
-        kpi_panel.on_reason_click(_on_attention_reason_click)
-
         async def sync_planning_state(ctx_now: dict[str, object], result_text: str = "") -> None:
             nonlocal updating_plan_select
             fleet_list.clear()
@@ -1482,8 +1492,8 @@ async def plans_page() -> None:
             if int(ctx_now["eligible_orders"]) == 0:  # type: ignore[arg-type]
                 blockers.append("brak zleceń „nowe” z wagą — wgraj Excel na Zleceniach")
                 can_generate = False
-            if int(ctx_now["available_vehicles"]) == 0:  # type: ignore[arg-type]
-                blockers.append("brak wolnych pojazdów — odblokuj trasę lub dodaj flotę")
+            if int(ctx_now["solver_vehicles"]) == 0:  # type: ignore[arg-type]
+                blockers.append("brak aktywnych pojazdów — odblokuj trasę lub dodaj flotę")
                 can_generate = False
             if blockers and not can_generate:
                 blocker_label.set_text("Nie można generować: " + "; ".join(blockers) + ".")
@@ -1541,7 +1551,6 @@ async def plans_page() -> None:
                 attention_wrap.set_visibility(False)
                 km_wrap.set_visibility(False)
                 cost_wrap.set_visibility(False)
-                kpi_panel.update(None)
             else:
                 staying_ids = list(view.staying_order_ids)
                 if staying_ids:
@@ -1567,11 +1576,6 @@ async def plans_page() -> None:
                     chip_cost.set_text(f"{view.summary.total_cost_eur:.0f} €")
                 else:
                     cost_wrap.set_visibility(False)
-                kpi = await run.io_bound(
-                    _load_generation_kpi,
-                    int(resolved) if isinstance(resolved, int) else None,
-                )
-                kpi_panel.update(kpi)
             routes_grid.options["rowData"] = view.routes
             routes_grid.update()
             hold_n = sum(1 for row in view.routes if row.get("disposition") == "hold")
@@ -1632,11 +1636,11 @@ async def plans_page() -> None:
             ctx_now = await run.io_bound(_load_planning_context, preferred)
             if (
                 int(ctx_now["eligible_orders"]) == 0  # type: ignore[arg-type]
-                or int(ctx_now["available_vehicles"]) == 0  # type: ignore[arg-type]
+                or int(ctx_now["solver_vehicles"]) == 0  # type: ignore[arg-type]
             ):
                 await sync_planning_state(ctx_now)
                 ui.notify(
-                    "Brak zleceń w puli lub wolnych pojazdów — nie można generować.",
+                    "Brak zleceń w puli lub aktywnych pojazdów — nie można generować.",
                     type="warning",
                 )
                 return
@@ -1654,6 +1658,7 @@ async def plans_page() -> None:
             gen_dialog.open()
             target = ctx_now.get("latest_run_id")
             target_id = int(target) if isinstance(target, int) else None
+            set_solver_running(True)
             try:
                 request = await run.io_bound(_prepare_plan_job, target_id, False)
                 gen_progress.set_value(0.15)
@@ -1706,6 +1711,8 @@ async def plans_page() -> None:
                 await refresh_plan_view()
                 ui.notify(str(exc), type="negative")
                 return
+            finally:
+                set_solver_running(False)
             _set_active_run_id(run_id)
             await refresh_plan_view()
             ctx_after = await run.io_bound(_load_planning_context, run_id)
@@ -2508,7 +2515,8 @@ async def reports_page() -> None:
     with page_frame("Raporty"):
         ops_page_header(
             "Raporty",
-            "Efektywność bieżącego stanu oraz historia generacji (audyt). Stawka za km z ustawień.",
+            "Efektywność bieżącego stanu oraz historia generacji (audyt). "
+            "Koszty = km x stawka €/km.",
         )
         with ui.element("div").classes("cd-ops-hero w-full"):
             ui.label("Efektywność bieżącego stanu").classes("font-bold")
@@ -2517,6 +2525,7 @@ async def reports_page() -> None:
         reports_kpi_panel = GenerationKpiPanel(kpi_reports_host)
         summary = ui.label("").classes("text-sm")
         summary.set_visibility(False)
+        ui.label("Koszty").classes("font-medium mt-1")
         reports_host = ui.element("div").classes("cd-grid-host")
         with reports_host:
             util_grid = (
@@ -3390,6 +3399,14 @@ def _run_backup_job():
     return run_backup()
 
 
+def _list_backups_job():
+    return list_backups()
+
+
+def _restore_backup_job(filename: str):
+    return restore_backup(filename)
+
+
 @ui.page("/system")
 async def system_page() -> None:
     with page_frame("Stan systemu"):
@@ -3409,7 +3426,54 @@ async def system_page() -> None:
             )
             show_log_btn = ui.button("Pokaż log", icon="article").props("outline")
         status_box = ui.column().classes("w-full gap-2")
+        ui.label("Kopie zapasowe").classes("font-medium mt-2")
+        ui.label(
+            "Przywrócenie nadpisuje bieżącą bazę. Przed restore tworzona jest kopia bezpieczeństwa."
+        ).classes("text-sm text-gray-600")
+        backups_host = ui.element("div").classes("cd-grid-host")
+        with backups_host:
+            backups_grid = (
+                ui.aggrid(
+                    {
+                        "columnDefs": [
+                            selection_column(multiple=False),
+                            {"headerName": "Data", "field": "mtime", "flex": 1},
+                            {"headerName": "Plik", "field": "name", "flex": 1},
+                            {"headerName": "Rozmiar", "field": "size", "width": 120},
+                        ],
+                        "rowData": [],
+                        "rowSelection": "single",
+                        "suppressRowClickSelection": True,
+                        "defaultColDef": grid_default_col_def(),
+                        "domLayout": "normal",
+                    }
+                )
+                .classes("w-full")
+                .style("height: 200px")
+            )
+        with ui.row().classes("cd-toolbar"):
+            restore_btn = ui.button("Przywróć wybraną kopię", icon="restore").props(
+                "outline color=negative"
+            )
+            enlarge_grid_button(
+                backups_grid,
+                backups_host,
+                title="Kopie zapasowe",
+                compact_height="200px",
+            )
         log_box = ui.column().classes("w-full gap-1 font-mono text-xs")
+
+        async def refresh_backups_grid() -> None:
+            items = await run.io_bound(_list_backups_job)
+            backups_grid.options["rowData"] = [
+                {
+                    "name": b.path.name,
+                    "mtime": b.mtime.strftime("%d.%m.%Y %H:%M"),
+                    "size": _fmt_bytes(b.size_bytes),
+                }
+                for b in items
+            ]
+            backups_grid.update()
 
         async def refresh_status() -> None:
             status_box.clear()
@@ -3460,6 +3524,7 @@ async def system_page() -> None:
                         ui.label(line)
                 else:
                     ui.label("Brak plików logów").classes("font-sans")
+            await refresh_backups_grid()
 
         async def _open_log_dialog(*, more: bool) -> None:
             filename = log_select.value
@@ -3513,8 +3578,57 @@ async def system_page() -> None:
             )
             await refresh_status()
 
+        async def on_restore_backup() -> None:
+            if is_solver_running():
+                ui.notify(
+                    "Trwa Generuj — poczekaj na koniec, potem przywróć kopię.",
+                    type="warning",
+                )
+                return
+            role = str(app.storage.user.get("role") or "")
+            if role and role != "admin":
+                ui.notify("Przywracanie kopii wymaga konta admin.", type="warning")
+                return
+            rows = await backups_grid.get_selected_rows()
+            if not rows:
+                ui.notify("Zaznacz kopię zapasową.", type="warning")
+                return
+            filename = str(rows[0]["name"])
+            with ui.dialog() as confirm, ui.card().classes("p-4 gap-3 max-w-md"):
+                ui.label("Przywrócić kopię zapasową?").classes("font-medium text-lg")
+                ui.label(f"Plik: {filename}. Nadpisze bieżącą bazę. Kontynuować?").classes(
+                    "text-sm text-gray-700"
+                )
+
+                async def do_restore() -> None:
+                    confirm.close()
+                    if is_solver_running():
+                        ui.notify(
+                            "Trwa Generuj — przywracanie anulowane.",
+                            type="warning",
+                        )
+                        return
+                    try:
+                        result = await run.io_bound(_restore_backup_job, filename)
+                    except Exception as exc:
+                        ui.notify(f"Przywracanie nieudane: {exc}", type="negative")
+                        return
+                    safety = result.safety_backup.name if result.safety_backup is not None else "—"
+                    ui.notify(
+                        f"Przywrócono {result.restored_from.name} "
+                        f"(kopia bezpieczeństwa: {safety}).",
+                        type="positive",
+                    )
+                    await refresh_status()
+
+                with ui.row().classes("gap-2 justify-end w-full"):
+                    ui.button("Anuluj", on_click=confirm.close).props("flat")
+                    ui.button("Przywróć", on_click=do_restore).props("color=negative")
+            confirm.open()
+
         refresh_btn.on_click(refresh_status)
         backup_btn.on_click(on_backup_now)
+        restore_btn.on_click(on_restore_backup)
         show_log_btn.on_click(on_show_log)
         await refresh_status()
 
@@ -3527,6 +3641,7 @@ def _vehicles_to_rows(vehicles: list[Vehicle]) -> list[dict[str, object]]:
             "vehicle_type": v.vehicle_type.value,
             "pallet_capacity": v.pallet_capacity,
             "weight_capacity_kg": v.weight_capacity_kg,
+            "cost_per_km": v.cost_per_km if v.cost_per_km is not None else "",
             "is_active": "tak" if v.is_active else "nie",
             "is_placeholder": "tak" if v.is_placeholder else "nie",
             "is_busy": "tak" if v.is_busy else "nie",
@@ -3583,6 +3698,7 @@ def _save_vehicle(
     pallet_capacity: int,
     weight_capacity_kg: float,
     is_active: bool,
+    cost_per_km: float | None,
 ) -> None:
     vehicle = Vehicle(
         id=vehicle_id,
@@ -3592,6 +3708,7 @@ def _save_vehicle(
         weight_capacity_kg=weight_capacity_kg,
         is_active=is_active,
         is_placeholder=False,
+        cost_per_km=cost_per_km,
     )
     with session_scope() as session:
         repo = VehicleRepository(session)
@@ -3750,6 +3867,7 @@ async def settings_page() -> None:
                                     {"headerName": "Typ", "field": "vehicle_type"},
                                     {"headerName": "Palety", "field": "pallet_capacity"},
                                     {"headerName": "Kg", "field": "weight_capacity_kg"},
+                                    {"headerName": "€/km", "field": "cost_per_km", "width": 90},
                                     {"headerName": "Aktywny", "field": "is_active"},
                                     {"headerName": "Zajęty", "field": "is_busy"},
                                 ],
@@ -3772,6 +3890,12 @@ async def settings_page() -> None:
                     ).classes("w-40")
                     pallets_in = ui.number("Palety", value=33, min=1).classes("w-28")
                     weight_in = ui.number("Ładowność kg", value=24000, min=1).classes("w-36")
+                    cost_km_in = ui.number(
+                        "€/km (puste = domyślne z ustawień)",
+                        value=None,
+                        min=0.01,
+                        format="%.2f",
+                    ).classes("w-56")
                     active_in = ui.checkbox("Aktywny", value=True)
 
                 async def refresh_vehicles() -> None:
@@ -3780,6 +3904,15 @@ async def settings_page() -> None:
                     grid.update()
 
                 async def on_save_vehicle() -> None:
+                    raw_rate = cost_km_in.value
+                    rate: float | None
+                    if raw_rate is None or raw_rate == "":
+                        rate = None
+                    else:
+                        rate = float(raw_rate)
+                        if rate <= 0:
+                            ui.notify("Stawka €/km musi być większa od zera.", type="warning")
+                            return
                     await run.io_bound(
                         _save_vehicle,
                         vehicle_id=editing_id["id"],
@@ -3788,6 +3921,7 @@ async def settings_page() -> None:
                         pallet_capacity=int(pallets_in.value or 0),
                         weight_capacity_kg=float(weight_in.value or 0),
                         is_active=bool(active_in.value),
+                        cost_per_km=rate,
                     )
                     editing_id["id"] = None
                     ui.notify("Zapisano pojazd.", type="positive")
@@ -3804,6 +3938,8 @@ async def settings_page() -> None:
                     type_in.value = str(row["vehicle_type"])
                     pallets_in.value = int(row["pallet_capacity"])
                     weight_in.value = float(row["weight_capacity_kg"])
+                    raw_cost = row.get("cost_per_km")
+                    cost_km_in.value = float(raw_cost) if raw_cost not in (None, "") else None
                     active_in.value = row["is_active"] == "tak"
 
                 with ui.row().classes("cd-toolbar"):

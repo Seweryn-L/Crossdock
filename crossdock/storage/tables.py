@@ -97,6 +97,7 @@ class VehicleRow(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     is_placeholder: Mapped[bool] = mapped_column(default=True)
     is_busy: Mapped[bool] = mapped_column(default=False)
+    cost_per_km: Mapped[float | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

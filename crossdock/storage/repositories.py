@@ -52,6 +52,7 @@ def _to_domain_vehicle(row: VehicleRow) -> Vehicle:
         is_active=row.is_active,
         is_placeholder=row.is_placeholder,
         is_busy=bool(row.is_busy),
+        cost_per_km=row.cost_per_km,
     )
 
 
@@ -347,6 +348,7 @@ class VehicleRepository:
             is_active=vehicle.is_active,
             is_placeholder=vehicle.is_placeholder,
             is_busy=vehicle.is_busy,
+            cost_per_km=vehicle.cost_per_km,
         )
         self._session.add(row)
         self._session.flush()
@@ -372,6 +374,7 @@ class VehicleRepository:
         row.weight_capacity_kg = vehicle.weight_capacity_kg
         row.is_active = vehicle.is_active
         row.is_placeholder = vehicle.is_placeholder
+        row.cost_per_km = vehicle.cost_per_km
         self._session.flush()
         return _to_domain_vehicle(row)
 
