@@ -32,5 +32,11 @@ Desktop.ini
 .vscode/
 .idea/
 
-# Pliki tymczasowe Excela
+# Pliki tymczasowe Excela / Worda
 ~$*.xlsx
+~$*.docx
+
+# Materiały AI / Cursor (nie wracają do repo)
+.cursor/
+AGENTS.md
+**/prompt_*.md

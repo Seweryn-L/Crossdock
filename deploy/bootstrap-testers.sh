@@ -25,7 +25,7 @@ if ! osrm_graph_ready; then
   echo
   echo "Opcje:"
   echo "  1) Skopiuj gotowy katalog data/osrm/ z maszyny dev (gdzie budowałeś mapę)"
-  echo "  2) Zbuduj na VM — patrz docs/osrm_local.md (wymaga ~16 GB RAM i PBF-y w data/)"
+  echo "  2) Zbuduj OSRM na VM (scripts/build_osrm_*.ps1/.cmd; wymaga ~16 GB RAM i PBF-y w data/)"
   echo
   echo "Szybki test czy katalog istnieje:"
   echo "  ls -la data/osrm/"

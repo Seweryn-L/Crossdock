@@ -4,37 +4,29 @@ System optymalizacji cross-dockingu w logistyce transportowej — aplikacja webo
 dla dyspozytorów: import zleceń transportowych z Excela (docelowo API TMS e2open), automatyczne
 planowanie transportów FTL (OR-Tools), wizualizacja tras na mapie, raporty efektywności.
 
-## Dokumentacja
-
-| Plik | Zawartość |
-| :--- | :--- |
-| [docs/stack_technologiczny.md](docs/stack_technologiczny.md) | Uzgodniony stack: technologie, licencje, decyzje architektoniczne, odrzucone opcje |
-| [docs/plan_tworzenia_aplikacji.md](docs/plan_tworzenia_aplikacji.md) | Harmonogram tygodniowy (14.07 → 15.09.2026) z kamieniami milowymi |
-| [docs/plan_t2_implementacja.md](docs/plan_t2_implementacja.md) | Szczegółowy plan implementacji tygodnia 2 (import, flota, haversine) |
-| [docs/plan_t3_implementacja.md](docs/plan_t3_implementacja.md) | Szczegółowy plan implementacji tygodnia 3 (CP-SAT przydział) |
-| [docs/otwarte_wejscia_zespolu.md](docs/otwarte_wejscia_zespolu.md) | Brakujące dane od zespołu (Patryk/Sandra/Martyna) + checklista podmiany |
-| [docs/walkthrough_t2.md](docs/walkthrough_t2.md) | Postęp T2: co działa, jak przetestować |
-| [docs/walkthrough_t3.md](docs/walkthrough_t3.md) | Postęp T3: przydział CP-SAT |
-| [docs/notatka_srs.md](docs/notatka_srs.md) | Wymagania funkcjonalne (FR) i niefunkcjonalne (NFR) |
-| [docs/karta_projektu_i_wdrozenia.md](docs/karta_projektu_i_wdrozenia.md) | Karta projektu: infrastruktura, zespół, fazy wdrożenia |
-| [docs/hosting_demo.md](docs/hosting_demo.md) | Tymczasowy deployment demo na Oracle VM przez Docker Compose |
-| [AGENTS.md](AGENTS.md) | Reguły dla agentów AI piszących kod w tym repozytorium |
-
 ## Struktura
 
 ```
-crossdock/            # pakiet aplikacji (powstanie w T1 planu)
-docs/                 # dokumentacja projektowa (kopie robocze)
-tests/fixtures/       # przykładowe dane z TMS e2open (.xlsx)
+crossdock/            # pakiet aplikacji
+tests/                # testy + fixtures (.xlsx)
+alembic/              # migracje bazy
+config/               # mapowania Excel / słowniki
+deploy/               # przykłady wdrożenia
+scripts/              # skrypty pomocnicze (OSRM)
 data/                 # baza SQLite, logi — poza gitem
 ```
 
-## Uruchomienie (od T1)
+## Uruchomienie
 
 ```powershell
-uv sync          # instalacja środowiska z lockfile
-uv run crossdock # start serwera — UI dostępne w przeglądarce w sieci LAN
+uv sync                    # instalacja środowiska z lockfile
+mkdir data                 # katalog runtime (baza, logi)
+uv run alembic upgrade head
+uv run crossdock           # UI: CROSSDOCK_HOST:CROSSDOCK_PORT (domyślnie 0.0.0.0:8080)
 ```
+
+Sekrety w `.env` (poza gitem); wzorzec w `.env.example`.
+`CROSSDOCK_STORAGE_SECRET` jest wymagany; `CROSSDOCK_ADMIN_PASSWORD` tworzy konto `admin` przy pustej bazie.
 
 ## Zasady
 
