@@ -82,7 +82,7 @@ GENERATE_PROTECT_HINT = (
 )
 APPROVE_ROUTE_HINT = (
     "Zatwierdzenie blokuje trasę przed kolejnym Generuj: "
-    "pojazd jest zajęty, zlecenia przechodzą na „przypisane do wyjazdu”."
+    "pojazd jest zajęty, zlecenia przechodzą na „gotowe do jazdy”."
 )
 DEPART_ROUTE_HINT = (
     "Oznacza faktyczny wyjazd z magazynu. Trasa przechodzi na „w drodze”; pojazd nadal jest zajęty."
