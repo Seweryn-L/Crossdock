@@ -1,8 +1,4 @@
-"""Load Excel column mapping from a JSON config file (not hardcoded).
-
-Until Sandra's official dictionary and Patryk's sample file arrive, this
-mapping is a working placeholder — see docs/otwarte_wejscia_zespolu.md.
-"""
+"""Load Excel column mapping from a JSON config file (not hardcoded)."""
 
 from __future__ import annotations
 

@@ -160,7 +160,7 @@ class BufferCandidate:
 
 @dataclass(frozen=True)
 class BufferRates:
-    """Cost parameters for FR-022 (placeholders until W-06)."""
+    """Cost parameters for the buffering heuristic."""
 
     cost_per_km: float
     storage_cost_per_pallet_day: float

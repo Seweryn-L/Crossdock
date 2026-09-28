@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     port: int = 8080
     session_max_idle_minutes: int = 60
     default_delivery_days: int = 7
-    # Excel column mapping — placeholder until Sandra's dictionary (W-02).
     excel_mapping_path: Path = Path("config/excel_column_mapping.json")
     upload_max_mb: int = 20
     # Cross-dock depot approx. Herentals / ~30 km from Antwerp (MVP seed).
@@ -67,9 +66,9 @@ class Settings(BaseSettings):
     # CP-SAT assignment (T3) — hard time limit + seed for reproducibility.
     solver_time_limit_s: float = 45.0
     solver_seed: int = 42
-    # Placeholder freight rate until Sandra's rates (W-06); used for plan cost display.
+    # €/km used when a plan cost is shown.
     cost_per_km: float = 1.2
-    # FR-022 buffering placeholders (W-06) — replace after Sandra's rates.
+    # Buffering: savings threshold, then storage cost, LTL multiplier, day cap.
     buffer_savings_threshold: float = 0.15
     storage_cost_per_pallet_day: float = 2.0
     ltl_cost_multiplier: float = 1.8

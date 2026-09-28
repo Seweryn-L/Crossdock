@@ -85,7 +85,7 @@ class AuditLogRow(Base):
 
 
 class VehicleRow(Base):
-    """Fleet vehicle. Seed rows are placeholders until Martyna's table (W-03)."""
+    """Fleet vehicle. Seed rows use approximate capacities."""
 
     __tablename__ = "vehicles"
 

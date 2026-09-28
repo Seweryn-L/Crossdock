@@ -87,8 +87,7 @@ class Location(BaseModel):
 class Vehicle(BaseModel):
     """Fleet vehicle with load capacities.
 
-    Seed capacities are PLACEHOLDER_PENDING_MARTYNA until the real fleet
-    table arrives (docs/otwarte_wejscia_zespolu.md W-03).
+    Seed rows use approximate capacities until the real fleet is entered.
     """
 
     id: int | None = None
