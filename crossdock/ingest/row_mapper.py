@@ -223,7 +223,7 @@ def row_to_shipment_and_locations(
     if not delivery_name:
         raise ValueError("brak miejsca dostawy (delivery_name)")
 
-    # Pallet count often missing in company files (W-04) — keep None, do not invent.
+    # Pallet count is often missing. Keep None, do not invent a number.
     pallet_count = None
     if "pallet_count" in mapping.columns:
         try:

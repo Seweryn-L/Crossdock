@@ -43,7 +43,7 @@ def _seed_fleet() -> None:
     with session_scope() as session:
         added = seed_placeholder_fleet(session)
     if added:
-        logger.info("Utworzono {} pojazdów floty (placeholder do W-03).", added)
+        logger.info("Utworzono {} pojazdów floty (pojemności startowe).", added)
 
 
 def _seed_locations() -> None:

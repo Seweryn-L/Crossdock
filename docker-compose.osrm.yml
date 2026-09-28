@@ -1,5 +1,5 @@
-# Optional OSRM overlay — road distances + route geometries (Faza 2 / stretch).
-# Requires preprocessed Belgium *.osrm files under ./data/osrm/ (variant A).
+# Opcjonalny OSRM: kilometry po drogach i geometria trasy na mapie.
+# Wymaga przygotowanego grafu *.osrm w ./data/osrm/ (scripts/build_osrm_be_nl_de_fr.ps1).
 #
 # Start OSRM alone (app on host or already running):
 #   docker compose -f docker-compose.osrm.yml --profile osrm up -d

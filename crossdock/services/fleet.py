@@ -1,7 +1,7 @@
-"""Fleet seed — PLACEHOLDER capacities until Martyna's table (W-03).
+"""Startowa flota, gdy tabela pojazdów jest pusta.
 
-Multiple units so a full e2open sample (~50 orders) can get partial
-assignment; capacities remain placeholders.
+Kilka sztuk każdego typu, żeby próbkę zleceń dało się częściowo rozplanować.
+Pojemności są orientacyjne.
 """
 
 from __future__ import annotations
@@ -219,7 +219,7 @@ def seed_placeholder_fleet(session: Session) -> int:
         action="fleet.seed_placeholder",
         details={
             "count": len(fleet),
-            "note": "PLACEHOLDER_PENDING_MARTYNA — docs/otwarte_wejscia_zespolu.md W-03",
+            "note": "pojemności startowe, do zastąpienia rzeczywistą flotą",
         },
     )
     return len(fleet)

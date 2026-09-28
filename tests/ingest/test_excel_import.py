@@ -38,7 +38,7 @@ def test_company_file_imports_orders(source: ExcelOrderSource, fixture_path: Pat
     assert sample.delivery_location.name
     assert sample.shipments[0].weight_kg is not None
     assert sample.shipments[0].weight_kg > 0
-    # No pallet column in company file (W-04).
+    # No pallet column in the sample file.
     assert sample.shipments[0].pallet_count is None
 
 

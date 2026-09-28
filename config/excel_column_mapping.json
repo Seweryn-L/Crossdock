@@ -1,5 +1,5 @@
 {
-  "_comment": "Mapowanie pod przykładowe_dane_od_firmy.xlsx (raport e2open). Nagłówek w wierszu 3. Brak kolumny palet (W-04). Słownik Sandry (W-02) może doprecyzować nazwy — do weryfikacji.",
+  "_comment": "Układ kolumn raportu e2open. Nagłówek w wierszu 3. Kolumny palet często nie ma — wtedy liczba palet zostaje pusta.",
   "header_row": 3,
   "sheet_name": null,
   "weight_unit": "kg",
